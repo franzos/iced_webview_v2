@@ -10,8 +10,8 @@ use iced::event::Status;
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::widget::image::{Handle, Image};
-use iced::{theme::Theme, Event, Length, Rectangle};
 use iced::{Element, Point, Size, Task};
+use iced::{Event, Length, Rectangle};
 use url::Url;
 
 use crate::{engines, ImageInfo, PageType, ViewId};
@@ -167,7 +167,9 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             }
             Action::CloseCurrentView => {
                 self.engine.remove_view(self.get_current_view_id());
-                self.view_ids.remove(self.current_view_index);
+                self.view_ids.remove(self.current_view_index.expect(
+                    "The current view index is not currently set. Ensure you call the Action prior",
+                ));
                 if let Some(on_view_close) = &self.on_close_view {
                     tasks.push(Task::done(on_view_close.clone()));
                 }
@@ -232,7 +234,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     }
 
     /// Returns webview widget for the current view
-    pub fn view(&self) -> Element<Action> {
+    pub fn view<T>(&self) -> Element<Action, T> {
         WebViewWidget::new(
             self.engine.get_view(self.get_current_view_id()),
             self.engine.get_cursor(self.get_current_view_id()),
@@ -252,7 +254,7 @@ impl<'a> WebViewWidget<'a> {
     }
 }
 
-impl<Renderer> Widget<Action, Theme, Renderer> for WebViewWidget<'_>
+impl<Renderer, Theme> Widget<Action, Theme, Renderer> for WebViewWidget<'_>
 where
     Renderer: iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
 {
@@ -340,7 +342,8 @@ where
     }
 }
 
-impl<'a, Message: 'a, Renderer> From<WebViewWidget<'a>> for Element<'a, Message, Theme, Renderer>
+impl<'a, Message: 'a, Renderer, Theme> From<WebViewWidget<'a>>
+    for Element<'a, Message, Theme, Renderer>
 where
     Renderer: advanced::Renderer + advanced::image::Renderer<Handle = advanced::image::Handle>,
     WebViewWidget<'a>: Widget<Message, Theme, Renderer>,

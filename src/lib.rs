@@ -103,16 +103,19 @@ impl ImageInfo {
     const WIDTH: u32 = 800;
     const HEIGHT: u32 = 800;
 
-    fn new(pixels: Vec<u8>, format: PixelFormat, width: u32, height: u32) -> Self {
+    fn new(mut pixels: Vec<u8>, format: PixelFormat, width: u32, height: u32) -> Self {
         // R, G, B, A
         assert_eq!(pixels.len() % 4, 0);
 
         let pixels = match format {
             PixelFormat::Rgba => pixels,
-            PixelFormat::Bgra => pixels
-                .chunks(4)
-                .flat_map(|chunk| [chunk[2], chunk[1], chunk[0], chunk[3]])
-                .collect(),
+            PixelFormat::Bgra => {
+                pixels
+                    .chunks_mut(4)
+                    // swap Red and Blue channel
+                    .for_each(|chunk| chunk.swap(0, 2));
+                pixels
+            }
         };
 
         Self {
@@ -128,6 +131,8 @@ impl ImageInfo {
             self.height,
             self.pixels.clone(),
         ))
+        .content_fit(iced::ContentFit::ScaleDown)
+        .filter_method(image::FilterMethod::Nearest)
     }
 
     fn blank(width: u32, height: u32) -> Self {

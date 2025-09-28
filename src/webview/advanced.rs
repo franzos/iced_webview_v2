@@ -10,8 +10,8 @@ use iced::event::Status;
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::widget::image::{Handle, Image};
-use iced::{theme::Theme, Event, Length, Rectangle};
 use iced::{Element, Point, Size, Task};
+use iced::{Event, Length, Rectangle};
 use url::Url;
 
 use crate::{engines, ImageInfo, PageType, ViewId};
@@ -187,7 +187,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     }
 
     /// Like a normal `view()` method in iced, but takes an id of the desired view
-    pub fn view(&self, id: usize) -> Element<Action> {
+    pub fn view<T>(&self, id: usize) -> Element<Action, T> {
         WebViewWidget::new(
             id,
             self.view_size,
@@ -216,7 +216,7 @@ impl WebViewWidget {
     }
 }
 
-impl<Renderer> Widget<Action, Theme, Renderer> for WebViewWidget
+impl<Renderer, Theme> Widget<Action, Theme, Renderer> for WebViewWidget
 where
     Renderer: iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
 {
@@ -304,7 +304,7 @@ where
     }
 }
 
-impl<'a, Message: 'a, Renderer> From<WebViewWidget> for Element<'a, Message, Theme, Renderer>
+impl<'a, Message: 'a, Renderer, Theme> From<WebViewWidget> for Element<'a, Message, Theme, Renderer>
 where
     Renderer: advanced::Renderer + advanced::image::Renderer<Handle = advanced::image::Handle>,
     WebViewWidget: Widget<Message, Theme, Renderer>,
