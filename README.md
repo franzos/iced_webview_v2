@@ -2,9 +2,9 @@
 
 A library to embed Web views in iced applications
 
-> Note: Currently this library only supports [Ultralight]/Webkit, but more rendering engines are planned to be supported.
-
-> [Ultralight has its own license](https://ultralig.ht/pricing/) that should be reviewed before deciding if it works for you
+This library supports
+- [Ultralight]/Webkit — full browser engine with JS and navigation ([license](https://ultralig.ht/pricing/))
+- [litehtml] — lightweight CPU-based HTML/CSS rendering, no JS or navigation (good for static content like emails)
 
 ## Compatibility
 
@@ -29,6 +29,12 @@ A more advanced example that uses the advanced webview module and has two simult
 cargo run --example multi_webview --features ultralight-resources
 ```
 
+##### `examples/email`
+Renders a table-based marketing email using litehtml — demonstrates static HTML rendering without a full browser engine
+```sh
+cargo run --example email --features litehtml
+```
+
 ## Extra files (Resources)
 
 Ultralight requires runtime resources. (cacert.pem, icudt67l.dat)
@@ -51,3 +57,4 @@ These can be downloaded from the [Ultralight SDK].
 
 [Ultralight]: https://ultralig.ht
 [Ultralight SDK]: https://ultralig.ht/download/
+[litehtml]: https://github.com/franzos/litehtml-rs
