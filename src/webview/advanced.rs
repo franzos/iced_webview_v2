@@ -4,9 +4,9 @@ use iced::advanced::{
     widget::Tree,
     Clipboard, Layout, Shell, Widget,
 };
+use iced::advanced::image as core_image;
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
-use iced::widget::image::{Handle, Image};
 use iced::{Element, Point, Size, Task};
 use iced::{Event, Length, Rectangle};
 use url::Url;
@@ -198,7 +198,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
 struct WebViewWidget {
     id: ViewId,
     bounds: Size<u32>,
-    image: Image<Handle>,
+    handle: core_image::Handle,
     cursor: Interaction,
 }
 
@@ -207,7 +207,7 @@ impl WebViewWidget {
         Self {
             id,
             bounds,
-            image: image.as_image(),
+            handle: image.as_handle(),
             cursor,
         }
     }
@@ -235,24 +235,19 @@ where
 
     fn draw(
         &self,
-        tree: &Tree,
+        _tree: &Tree,
         renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
+        _theme: &Theme,
+        _style: &renderer::Style,
         layout: Layout<'_>,
-        cursor: mouse::Cursor,
+        _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        <Image<Handle> as Widget<Action, Theme, Renderer>>::draw(
-            &self.image,
-            tree,
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        )
+        renderer.draw_image(
+            core_image::Image::new(self.handle.clone()).snap(true),
+            layout.bounds(),
+            *viewport,
+        );
     }
 
     fn update(

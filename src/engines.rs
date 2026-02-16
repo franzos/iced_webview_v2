@@ -8,6 +8,10 @@ use iced::Size;
 #[cfg(feature = "ultralight")]
 pub mod ultralight;
 
+/// A litehtml implementation of Engine for HTML rendering
+#[cfg(feature = "litehtml")]
+pub mod litehtml;
+
 /// Creation of new pages to be of a html type or a url
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum PageType {
@@ -50,6 +54,8 @@ pub trait Engine {
     fn unfocus(&self);
     /// Resizes webview
     fn resize(&mut self, size: Size<u32>);
+    /// Set the display scale factor for HiDPI rendering. Default is no-op.
+    fn set_scale_factor(&mut self, _scale: f32) {}
 
     /// lets the engine handle keyboard events
     fn handle_keyboard_event(&mut self, id: ViewId, event: keyboard::Event);

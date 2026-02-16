@@ -4,9 +4,9 @@ use iced::advanced::{
     widget::Tree,
     Clipboard, Layout, Shell, Widget,
 };
+use iced::advanced::image as core_image;
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
-use iced::widget::image::{Handle, Image};
 use iced::{Element, Point, Size, Task};
 use iced::{Event, Length, Rectangle};
 use url::Url;
@@ -43,6 +43,7 @@ where
 {
     engine: Engine,
     view_size: Size<u32>,
+    scale_factor: f32,
     current_view_index: Option<usize>, // the index corresponding to the view_ids list of ViewIds
     view_ids: Vec<ViewId>, // allow users to index by simple id like 0 or 1 instead of a true id
     on_close_view: Option<Message>,
@@ -81,6 +82,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
                 width: 1920,
                 height: 1080,
             },
+            scale_factor: 1.0,
             current_view_index: None,
             view_ids: Vec::new(),
             on_close_view: None,
@@ -97,6 +99,13 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     /// Create new basic WebView widget
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the display scale factor for HiDPI rendering.
+    /// The engine will render at `logical_size * scale_factor` pixels.
+    pub fn set_scale_factor(&mut self, scale: f32) {
+        self.scale_factor = scale;
+        self.engine.set_scale_factor(scale);
     }
 
     /// subscribe to create view events
@@ -217,8 +226,10 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 return Task::batch(tasks);
             }
             Action::Resize(size) => {
-                self.view_size = size;
-                self.engine.resize(size);
+                if self.view_size != size {
+                    self.view_size = size;
+                    self.engine.resize(size);
+                }
             }
         };
 
@@ -231,27 +242,37 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     }
 
     /// Returns webview widget for the current view
-    pub fn view<T>(&self) -> Element<Action, T> {
+    pub fn view<'a, T: 'a>(&self) -> Element<'a, Action, T> {
         WebViewWidget::new(
             self.engine.get_view(self.get_current_view_id()),
             self.engine.get_cursor(self.get_current_view_id()),
         )
         .into()
     }
-}
 
-struct WebViewWidget<'a> {
-    image_info: &'a ImageInfo,
-    cursor: Interaction,
-}
-
-impl<'a> WebViewWidget<'a> {
-    fn new(image_info: &'a ImageInfo, cursor: Interaction) -> Self {
-        Self { image_info, cursor }
+    /// Get the current view's image info for direct rendering
+    pub fn current_image(&self) -> &crate::ImageInfo {
+        self.engine.get_view(self.get_current_view_id())
     }
 }
 
-impl<Renderer, Theme> Widget<Action, Theme, Renderer> for WebViewWidget<'_>
+struct WebViewWidget {
+    handle: core_image::Handle,
+    cursor: Interaction,
+    bounds: Size<u32>,
+}
+
+impl WebViewWidget {
+    fn new(image_info: &ImageInfo, cursor: Interaction) -> Self {
+        Self {
+            handle: image_info.as_handle(),
+            cursor,
+            bounds: Size::new(0, 0),
+        }
+    }
+}
+
+impl<Renderer, Theme> Widget<Action, Theme, Renderer> for WebViewWidget
 where
     Renderer: iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
 {
@@ -273,24 +294,24 @@ where
 
     fn draw(
         &self,
-        tree: &Tree,
+        _tree: &Tree,
         renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
+        _theme: &Theme,
+        _style: &renderer::Style,
         layout: Layout<'_>,
-        cursor: mouse::Cursor,
+        _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        <Image<Handle> as Widget<Action, Theme, Renderer>>::draw(
-            &self.image_info.as_image(),
-            tree,
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        )
+        // Draw the image directly into the layout bounds, bypassing
+        // ContentFit. The pixel buffer is at physical resolution
+        // (logical × scale_factor); iced's renderer maps the layout
+        // bounds (logical) to physical device pixels, giving us 1:1
+        // texture-to-screen mapping on HiDPI displays.
+        renderer.draw_image(
+            core_image::Image::new(self.handle.clone()).snap(true),
+            layout.bounds(),
+            *viewport,
+        );
     }
 
     fn update(
@@ -305,7 +326,8 @@ where
         _viewport: &Rectangle,
     ) {
         let size = Size::new(layout.bounds().width as u32, layout.bounds().height as u32);
-        if self.image_info.width != size.width || self.image_info.height != size.height {
+        if self.bounds != size {
+            self.bounds = size;
             shell.publish(Action::Resize(size));
         }
 
@@ -338,13 +360,13 @@ where
     }
 }
 
-impl<'a, Message: 'a, Renderer, Theme> From<WebViewWidget<'a>>
+impl<'a, Message: 'a, Renderer, Theme> From<WebViewWidget>
     for Element<'a, Message, Theme, Renderer>
 where
     Renderer: advanced::Renderer + advanced::image::Renderer<Handle = advanced::image::Handle>,
-    WebViewWidget<'a>: Widget<Message, Theme, Renderer>,
+    WebViewWidget: Widget<Message, Theme, Renderer>,
 {
-    fn from(widget: WebViewWidget<'a>) -> Self {
+    fn from(widget: WebViewWidget) -> Self {
         Self::new(widget)
     }
 }

@@ -80,20 +80,24 @@ pub use webview::{advanced, basic}; // pub these since its the default/reccommen
 #[cfg(feature = "ultralight")]
 pub use engines::ultralight::Ultralight;
 
+#[cfg(feature = "litehtml")]
+pub use engines::litehtml::Litehtml;
+
 /// Image details for passing the view around
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ImageInfo {
-    pixels: Vec<u8>,
     width: u32,
     height: u32,
+    handle: image::Handle,
 }
 
 impl Default for ImageInfo {
     fn default() -> Self {
+        let pixels = vec![255; (Self::WIDTH as usize * Self::HEIGHT as usize) * 4];
         Self {
-            pixels: vec![255; (Self::WIDTH as usize * Self::HEIGHT as usize) * 4],
             width: Self::WIDTH,
             height: Self::HEIGHT,
+            handle: image::Handle::from_rgba(Self::WIDTH, Self::HEIGHT, pixels),
         }
     }
 }
@@ -107,39 +111,40 @@ impl ImageInfo {
         // R, G, B, A
         assert_eq!(pixels.len() % 4, 0);
 
-        let pixels = match format {
-            PixelFormat::Rgba => pixels,
-            PixelFormat::Bgra => {
-                pixels
-                    .chunks_mut(4)
-                    // swap Red and Blue channel
-                    .for_each(|chunk| chunk.swap(0, 2));
-                pixels
-            }
-        };
+        if let PixelFormat::Bgra = format {
+            pixels
+                .chunks_mut(4)
+                .for_each(|chunk| chunk.swap(0, 2));
+        }
 
         Self {
-            pixels,
             width,
             height,
+            handle: image::Handle::from_rgba(width, height, pixels),
         }
     }
 
-    fn as_image(&self) -> image::Image<image::Handle> {
-        image::Image::new(image::Handle::from_rgba(
-            self.width,
-            self.height,
-            self.pixels.clone(),
-        ))
-        .content_fit(iced::ContentFit::ScaleDown)
-        .filter_method(image::FilterMethod::Nearest)
+    /// Get the image handle for direct rendering.
+    pub fn as_handle(&self) -> image::Handle {
+        self.handle.clone()
+    }
+
+    /// Image width.
+    pub fn image_width(&self) -> u32 {
+        self.width
+    }
+
+    /// Image height.
+    pub fn image_height(&self) -> u32 {
+        self.height
     }
 
     fn blank(width: u32, height: u32) -> Self {
+        let pixels = vec![255; (width as usize * height as usize) * 4];
         Self {
-            pixels: vec![255; (width as usize * height as usize) * 4],
             width,
             height,
+            handle: image::Handle::from_rgba(width, height, pixels),
         }
     }
 }
