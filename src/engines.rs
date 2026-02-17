@@ -81,4 +81,15 @@ pub trait Engine {
     fn get_cursor(&self, id: ViewId) -> Interaction;
     /// Gets cpu renderered webview
     fn get_view(&self, id: ViewId) -> &ImageInfo;
+
+    /// Gets the currently selected text from a view, if any.
+    fn get_selected_text(&self, _id: ViewId) -> Option<String> {
+        None
+    }
+
+    /// Selection highlight rectangles for overlay rendering.
+    /// Returns `[x, y, width, height]` in logical coordinates, scroll-adjusted.
+    fn get_selection_rects(&self, _id: ViewId) -> &[[f32; 4]] {
+        &[]
+    }
 }

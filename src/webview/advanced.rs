@@ -29,6 +29,8 @@ pub enum Action {
     /// Call this periodically to update a view(s)
     UpdateAll,
     Resize(Size<u32>),
+    /// Copy the current text selection to clipboard
+    CopySelection(ViewId),
 }
 
 /// The Advanced WebView widget that creates and shows webview(s)
@@ -44,6 +46,7 @@ where
     urls: Vec<(ViewId, String)>,
     on_title_change: Option<Box<dyn Fn(ViewId, String) -> Message>>,
     titles: Vec<(ViewId, String)>,
+    on_copy: Option<Box<dyn Fn(String) -> Message>>,
 }
 
 impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
@@ -59,6 +62,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
             urls: Vec::new(),
             on_title_change: None,
             titles: Vec::new(),
+            on_copy: None,
         }
     }
 }
@@ -96,6 +100,12 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
         on_title_change: impl Fn(ViewId, String) -> Message + 'static,
     ) -> Self {
         self.on_title_change = Some(Box::new(on_title_change));
+        self
+    }
+
+    /// Subscribe to copy events (text selection copied via Ctrl+C / Cmd+C)
+    pub fn on_copy(mut self, on_copy: impl Fn(String) -> Message + 'static) -> Self {
+        self.on_copy = Some(Box::new(on_copy));
         self
     }
 
@@ -178,44 +188,60 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 self.view_size = size;
                 self.engine.resize(size);
             }
+            Action::CopySelection(id) => {
+                if let Some(text) = self.engine.get_selected_text(id) {
+                    if let Some(on_copy) = &self.on_copy {
+                        tasks.push(Task::done((on_copy)(text)));
+                    }
+                }
+            }
         };
 
         Task::batch(tasks)
     }
 
     /// Like a normal `view()` method in iced, but takes an id of the desired view
-    pub fn view<T>(&self, id: usize) -> Element<Action, T> {
+    pub fn view<'a, T: 'a>(&'a self, id: usize) -> Element<'a, Action, T> {
         WebViewWidget::new(
             id,
             self.view_size,
             self.engine.get_view(id),
             self.engine.get_cursor(id),
+            self.engine.get_selection_rects(id),
         )
         .into()
     }
 }
 
-struct WebViewWidget {
+struct WebViewWidget<'a> {
     id: ViewId,
     bounds: Size<u32>,
     handle: core_image::Handle,
     cursor: Interaction,
+    selection_rects: &'a [[f32; 4]],
 }
 
-impl WebViewWidget {
-    fn new(id: ViewId, bounds: Size<u32>, image: &ImageInfo, cursor: Interaction) -> Self {
+impl<'a> WebViewWidget<'a> {
+    fn new(
+        id: ViewId,
+        bounds: Size<u32>,
+        image: &ImageInfo,
+        cursor: Interaction,
+        selection_rects: &'a [[f32; 4]],
+    ) -> Self {
         Self {
             id,
             bounds,
             handle: image.as_handle(),
             cursor,
+            selection_rects,
         }
     }
 }
 
-impl<Renderer, Theme> Widget<Action, Theme, Renderer> for WebViewWidget
+impl<'a, Renderer, Theme> Widget<Action, Theme, Renderer> for WebViewWidget<'a>
 where
-    Renderer: iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
+    Renderer: iced::advanced::Renderer + iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
 {
     fn size(&self) -> Size<Length> {
         Size {
@@ -243,11 +269,35 @@ where
         _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        let bounds = layout.bounds();
+
         renderer.draw_image(
             core_image::Image::new(self.handle.clone()).snap(true),
-            layout.bounds(),
+            bounds,
             *viewport,
         );
+
+        if !self.selection_rects.is_empty() {
+            let rects = self.selection_rects;
+            renderer.with_layer(bounds, |renderer| {
+                let highlight = iced::Color::from_rgba(0.26, 0.52, 0.96, 0.3);
+                for rect in rects {
+                    let quad_bounds = Rectangle {
+                        x: bounds.x + rect[0],
+                        y: bounds.y + rect[1],
+                        width: rect[2],
+                        height: rect[3],
+                    };
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: quad_bounds,
+                            ..renderer::Quad::default()
+                        },
+                        highlight,
+                    );
+                }
+            });
+        }
     }
 
     fn update(
@@ -268,6 +318,13 @@ where
 
         match event {
             Event::Keyboard(event) => {
+                if let keyboard::Event::KeyPressed { key, modifiers, .. } = event {
+                    if let keyboard::Key::Character(c) = key {
+                        if modifiers.command() && c.as_str() == "c" {
+                            shell.publish(Action::CopySelection(self.id));
+                        }
+                    }
+                }
                 shell.publish(Action::SendKeyboardEvent(self.id, event.clone()));
             }
             Event::Mouse(event) => {
@@ -295,12 +352,13 @@ where
     }
 }
 
-impl<'a, Message: 'a, Renderer, Theme> From<WebViewWidget> for Element<'a, Message, Theme, Renderer>
+impl<'a, Message: 'a, Renderer, Theme> From<WebViewWidget<'a>>
+    for Element<'a, Message, Theme, Renderer>
 where
     Renderer: advanced::Renderer + advanced::image::Renderer<Handle = advanced::image::Handle>,
-    WebViewWidget: Widget<Message, Theme, Renderer>,
+    WebViewWidget<'a>: Widget<Message, Theme, Renderer>,
 {
-    fn from(widget: WebViewWidget) -> Self {
+    fn from(widget: WebViewWidget<'a>) -> Self {
         Self::new(widget)
     }
 }

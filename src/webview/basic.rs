@@ -34,6 +34,8 @@ pub enum Action {
     /// Allows users to control when the browser engine proccesses interactions in subscriptions
     Update,
     Resize(Size<u32>),
+    /// Copy the current text selection to clipboard
+    CopySelection,
 }
 
 /// The Basic WebView widget that creates and shows webview(s)
@@ -52,6 +54,7 @@ where
     url: String,
     on_title_change: Option<Box<dyn Fn(String) -> Message>>,
     title: String,
+    on_copy: Option<Box<dyn Fn(String) -> Message>>,
 }
 
 impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView<Engine, Message> {
@@ -91,6 +94,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
             url: String::new(),
             on_title_change: None,
             title: String::new(),
+            on_copy: None,
         }
     }
 }
@@ -132,6 +136,12 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
         on_title_change: impl Fn(String) -> Message + 'static,
     ) -> Self {
         self.on_title_change = Some(Box::new(on_title_change));
+        self
+    }
+
+    /// Subscribe to copy events (text selection copied via Ctrl+C / Cmd+C)
+    pub fn on_copy(mut self, on_copy: impl Fn(String) -> Message + 'static) -> Self {
+        self.on_copy = Some(Box::new(on_copy));
         self
     }
 
@@ -231,6 +241,15 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     self.engine.resize(size);
                 }
             }
+            Action::CopySelection => {
+                if self.current_view_index.is_some() {
+                    if let Some(text) = self.engine.get_selected_text(self.get_current_view_id()) {
+                        if let Some(on_copy) = &self.on_copy {
+                            tasks.push(Task::done((on_copy)(text)));
+                        }
+                    }
+                }
+            }
         };
 
         if self.current_view_index.is_some() {
@@ -242,10 +261,12 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     }
 
     /// Returns webview widget for the current view
-    pub fn view<'a, T: 'a>(&self) -> Element<'a, Action, T> {
+    pub fn view<'a, T: 'a>(&'a self) -> Element<'a, Action, T> {
+        let id = self.get_current_view_id();
         WebViewWidget::new(
-            self.engine.get_view(self.get_current_view_id()),
-            self.engine.get_cursor(self.get_current_view_id()),
+            self.engine.get_view(id),
+            self.engine.get_cursor(id),
+            self.engine.get_selection_rects(id),
         )
         .into()
     }
@@ -256,25 +277,27 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     }
 }
 
-struct WebViewWidget {
+struct WebViewWidget<'a> {
     handle: core_image::Handle,
     cursor: Interaction,
     bounds: Size<u32>,
+    selection_rects: &'a [[f32; 4]],
 }
 
-impl WebViewWidget {
-    fn new(image_info: &ImageInfo, cursor: Interaction) -> Self {
+impl<'a> WebViewWidget<'a> {
+    fn new(image_info: &ImageInfo, cursor: Interaction, selection_rects: &'a [[f32; 4]]) -> Self {
         Self {
             handle: image_info.as_handle(),
             cursor,
             bounds: Size::new(0, 0),
+            selection_rects,
         }
     }
 }
 
-impl<Renderer, Theme> Widget<Action, Theme, Renderer> for WebViewWidget
+impl<'a, Renderer, Theme> Widget<Action, Theme, Renderer> for WebViewWidget<'a>
 where
-    Renderer: iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
+    Renderer: iced::advanced::Renderer + iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
 {
     fn size(&self) -> Size<Length> {
         Size {
@@ -302,16 +325,38 @@ where
         _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        // Draw the image directly into the layout bounds, bypassing
-        // ContentFit. The pixel buffer is at physical resolution
-        // (logical × scale_factor); iced's renderer maps the layout
-        // bounds (logical) to physical device pixels, giving us 1:1
-        // texture-to-screen mapping on HiDPI displays.
+        let bounds = layout.bounds();
+
         renderer.draw_image(
             core_image::Image::new(self.handle.clone()).snap(true),
-            layout.bounds(),
+            bounds,
             *viewport,
         );
+
+        // Selection highlights must be in a separate layer so they render
+        // on top of the image (within a single layer, iced batches quads
+        // before images).
+        if !self.selection_rects.is_empty() {
+            let rects = self.selection_rects;
+            renderer.with_layer(bounds, |renderer| {
+                let highlight = iced::Color::from_rgba(0.26, 0.52, 0.96, 0.3);
+                for rect in rects {
+                    let quad_bounds = Rectangle {
+                        x: bounds.x + rect[0],
+                        y: bounds.y + rect[1],
+                        width: rect[2],
+                        height: rect[3],
+                    };
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: quad_bounds,
+                            ..renderer::Quad::default()
+                        },
+                        highlight,
+                    );
+                }
+            });
+        }
     }
 
     fn update(
@@ -333,6 +378,13 @@ where
 
         match event {
             Event::Keyboard(event) => {
+                if let keyboard::Event::KeyPressed { key, modifiers, .. } = event {
+                    if let keyboard::Key::Character(c) = key {
+                        if modifiers.command() && c.as_str() == "c" {
+                            shell.publish(Action::CopySelection);
+                        }
+                    }
+                }
                 shell.publish(Action::SendKeyboardEvent(event.clone()));
             }
             Event::Mouse(event) => {
@@ -360,13 +412,13 @@ where
     }
 }
 
-impl<'a, Message: 'a, Renderer, Theme> From<WebViewWidget>
+impl<'a, Message: 'a, Renderer, Theme> From<WebViewWidget<'a>>
     for Element<'a, Message, Theme, Renderer>
 where
     Renderer: advanced::Renderer + advanced::image::Renderer<Handle = advanced::image::Handle>,
-    WebViewWidget: Widget<Message, Theme, Renderer>,
+    WebViewWidget<'a>: Widget<Message, Theme, Renderer>,
 {
-    fn from(widget: WebViewWidget) -> Self {
+    fn from(widget: WebViewWidget<'a>) -> Self {
         Self::new(widget)
     }
 }

@@ -7,19 +7,41 @@ use super::{Engine, PageType, PixelFormat, ViewId};
 use crate::ImageInfo;
 
 use litehtml::pixbuf::PixbufContainer;
+use litehtml::selection::Selection;
 use litehtml::{Document, Position};
+
+/// Persistent document and selection state for a view.
+///
+/// # Safety
+///
+/// The `doc` field borrows from the `Box<PixbufContainer>` in the parent
+/// `LitehtmlView`. The container is heap-allocated for address stability.
+/// `doc_state` is always dropped before the container is modified or dropped
+/// (field drop order: `doc_state` is declared before `container`).
+struct DocumentState {
+    doc: Document<'static>,
+    measure: Box<dyn Fn(&str, usize) -> f32>,
+    selection: Selection<'static>,
+}
 
 struct LitehtmlView {
     id: ViewId,
-    container: PixbufContainer,
+    // IMPORTANT: doc_state must be declared before container so it drops first.
+    doc_state: Option<DocumentState>,
+    container: Box<PixbufContainer>,
     html: String,
     title: String,
     cursor: Interaction,
     last_frame: ImageInfo,
     needs_render: bool,
+    /// Selection highlight rects in logical coords, scroll-adjusted.
+    /// Drawn as iced quads by the widget so the base image Handle stays stable.
+    selection_rects: Vec<[f32; 4]>,
     scroll_y: f32,
     content_height: f32,
     size: Size<u32>,
+    drag_origin: Option<(f32, f32)>,
+    drag_active: bool,
 }
 
 /// CPU-based HTML rendering engine backed by litehtml.
@@ -56,11 +78,89 @@ impl Litehtml {
     }
 }
 
-/// Render a view's HTML into its container, extracting pixels into last_frame.
+/// Build a persistent Document for the view, storing it alongside its
+/// text-measurement closure and a fresh Selection.
 ///
-/// Creates a temporary `Document`, lays it out, draws it, then drops the
-/// document. This sidesteps the lifetime constraint (`Document<'a>` borrows
-/// the container) by never storing the document across frames.
+/// Drops any existing document state first (releasing the container borrow),
+/// then resizes the container, creates a new Document, and renders the layout.
+fn rebuild_document(view: &mut LitehtmlView) {
+    view.doc_state = None;
+
+    let w = view.size.width;
+    let h = view.size.height;
+
+    if w == 0 || h == 0 || view.html.is_empty() {
+        return;
+    }
+
+    view.container.resize(w, h);
+
+    // Capture the text measurement closure before borrowing the container
+    let measure = view.container.text_measure_fn();
+
+    // SAFETY: container is Box<PixbufContainer> — heap-allocated, stable address.
+    // The returned Document borrows the container. We extend the lifetime to
+    // 'static because Rust can't express self-referential borrows. Safety:
+    //   1. doc_state is declared before container → dropped first
+    //   2. doc_state is set to None before any container modification
+    let container_ptr = &mut *view.container as *mut PixbufContainer;
+    let container_ref: &'static mut PixbufContainer = unsafe { &mut *container_ptr };
+
+    match Document::from_html(&view.html, container_ref, None, None) {
+        Err(e) => {
+            eprintln!("litehtml: from_html failed: {e:?}");
+        }
+        Ok(mut doc) => {
+            let _ = doc.render(w as f32);
+            view.content_height = doc.height();
+
+            let selection: Selection<'static> = Selection::new();
+
+            view.doc_state = Some(DocumentState {
+                doc,
+                measure: Box::new(measure),
+                selection,
+            });
+        }
+    }
+}
+
+/// Render the document into the pixel buffer and update `last_frame`.
+///
+/// Selection highlights are NOT baked into the pixels — they are drawn
+/// as iced quads by the widget, so the image Handle stays stable and
+/// doesn't cause GPU texture churn on every mouse move.
+fn draw_view(view: &mut LitehtmlView) {
+    let w = view.size.width;
+    let h = view.size.height;
+
+    let max_scroll = (view.content_height - h as f32).max(0.0);
+    view.scroll_y = view.scroll_y.clamp(0.0, max_scroll);
+
+    // Reset the pixmap to transparent before drawing.
+    // The old code created a new Document (and called resize()) per frame;
+    // now that the Document is persistent, we must clear manually.
+    view.container.resize(w, h);
+
+    if let Some(ref mut state) = view.doc_state {
+        let clip = Position {
+            x: 0.0,
+            y: 0.0,
+            width: w as f32,
+            height: h as f32,
+        };
+        state.doc.draw(0, 0.0, -view.scroll_y, Some(clip));
+    }
+
+    let phys_w = view.container.width();
+    let phys_h = view.container.height();
+    let pixels = unpremultiply_rgba(view.container.pixels());
+
+    view.last_frame = ImageInfo::new(pixels, PixelFormat::Rgba, phys_w, phys_h);
+    view.needs_render = false;
+}
+
+/// Main render entry point: rebuilds the document if needed, then draws.
 fn render_view(view: &mut LitehtmlView) {
     let w = view.size.width;
     let h = view.size.height;
@@ -77,39 +177,11 @@ fn render_view(view: &mut LitehtmlView) {
         return;
     }
 
-    // Clear the pixmap (logical dims — container scales internally)
-    view.container.resize(w, h);
-
-    match Document::from_html(&view.html, &mut view.container, None, None) {
-        Err(e) => {
-            eprintln!("litehtml: from_html failed: {e:?}");
-        }
-        Ok(mut doc) => {
-            // CSS layout at logical width
-            let _ = doc.render(w as f32);
-            view.content_height = doc.height();
-
-            let max_scroll = (view.content_height - h as f32).max(0.0);
-            view.scroll_y = view.scroll_y.clamp(0.0, max_scroll);
-
-            // Clip rect in logical coordinates
-            let clip = Position {
-                x: 0.0,
-                y: 0.0,
-                width: w as f32,
-                height: h as f32,
-            };
-            doc.draw(0, 0.0, -view.scroll_y, Some(clip));
-        }
+    if view.doc_state.is_none() {
+        rebuild_document(view);
     }
 
-    // Pixel buffer is at physical resolution
-    let phys_w = view.container.width();
-    let phys_h = view.container.height();
-    let pixels = unpremultiply_rgba(view.container.pixels());
-
-    view.last_frame = ImageInfo::new(pixels, PixelFormat::Rgba, phys_w, phys_h);
-    view.needs_render = false;
+    draw_view(view);
 }
 
 /// Convert premultiplied-alpha RGBA pixels to straight alpha.
@@ -130,6 +202,24 @@ fn unpremultiply_rgba(pixels: &[u8]) -> Vec<u8> {
         }
     }
     result
+}
+
+/// Convert selection rectangles from document coordinates to scroll-adjusted
+/// logical coordinates and store them on the view.
+fn update_selection_rects(view: &mut LitehtmlView) {
+    view.selection_rects.clear();
+    if let Some(ref state) = view.doc_state {
+        let scroll = view.scroll_y;
+        let vh = view.size.height as f32;
+        for r in state.selection.rectangles() {
+            let y = r.y - scroll;
+            // Skip rects entirely outside the viewport.
+            if y + r.height < 0.0 || y > vh {
+                continue;
+            }
+            view.selection_rects.push([r.x, y, r.width, r.height]);
+        }
+    }
 }
 
 impl Engine for Litehtml {
@@ -164,15 +254,19 @@ impl Engine for Litehtml {
 
         let mut view = LitehtmlView {
             id,
-            container: PixbufContainer::new_with_scale(w, h, self.scale_factor),
+            doc_state: None,
+            container: Box::new(PixbufContainer::new_with_scale(w, h, self.scale_factor)),
             html,
             title: String::new(),
             cursor: Interaction::Idle,
             last_frame: ImageInfo::blank(w, h),
             needs_render: true,
+            selection_rects: Vec::new(),
             scroll_y: 0.0,
             content_height: 0.0,
             size,
+            drag_origin: None,
+            drag_active: false,
         };
 
         render_view(&mut view);
@@ -194,6 +288,8 @@ impl Engine for Litehtml {
 
     fn resize(&mut self, size: Size<u32>) {
         for view in &mut self.views {
+            view.doc_state = None;
+        
             view.size = size;
             view.needs_render = true;
         }
@@ -205,6 +301,8 @@ impl Engine for Litehtml {
         }
         self.scale_factor = scale;
         for view in &mut self.views {
+            view.doc_state = None;
+        
             view.container
                 .resize_with_scale(view.size.width, view.size.height, scale);
             view.needs_render = true;
@@ -215,9 +313,62 @@ impl Engine for Litehtml {
         // No-op: litehtml has no keyboard interaction.
     }
 
-    fn handle_mouse_event(&mut self, id: ViewId, _point: Point, event: mouse::Event) {
+    fn handle_mouse_event(&mut self, id: ViewId, point: Point, event: mouse::Event) {
         match event {
-            mouse::Event::WheelScrolled { delta } => self.scroll(id, delta),
+            mouse::Event::WheelScrolled { delta } => {
+                self.scroll(id, delta);
+            }
+            mouse::Event::ButtonPressed(mouse::Button::Left) => {
+                let view = self.find_view_mut(id);
+                view.drag_origin = Some((point.x, point.y));
+                view.drag_active = false;
+                if let Some(ref mut state) = view.doc_state {
+                    state.selection.clear();
+                }
+                view.selection_rects.clear();
+            }
+            mouse::Event::CursorMoved { .. } => {
+                let view = self.find_view_mut(id);
+                if let Some((ox, oy)) = view.drag_origin {
+                    let dx = point.x - ox;
+                    let dy = point.y - oy;
+
+                    if !view.drag_active && (dx * dx + dy * dy).sqrt() >= 4.0 {
+                        view.drag_active = true;
+                        if let Some(ref mut state) = view.doc_state {
+                            let doc_y = oy + view.scroll_y;
+                            state.selection.start_at(
+                                &state.doc,
+                                &*state.measure,
+                                ox,
+                                doc_y,
+                                ox,
+                                oy,
+                            );
+                        }
+                    }
+
+                    if view.drag_active {
+                        if let Some(ref mut state) = view.doc_state {
+                            let doc_y = point.y + view.scroll_y;
+                            state.selection.extend_to(
+                                &state.doc,
+                                &*state.measure,
+                                point.x,
+                                doc_y,
+                                point.x,
+                                point.y,
+                            );
+                        }
+                        update_selection_rects(view);
+                    }
+                }
+            }
+            mouse::Event::ButtonReleased(mouse::Button::Left) => {
+                let view = self.find_view_mut(id);
+                view.drag_active = false;
+                view.drag_origin = None;
+            }
             _ => {}
         }
     }
@@ -234,6 +385,7 @@ impl Engine for Litehtml {
         }
         let max_scroll = (view.content_height - view.size.height as f32).max(0.0);
         view.scroll_y = view.scroll_y.clamp(0.0, max_scroll);
+    
         view.needs_render = true;
     }
 
@@ -241,6 +393,8 @@ impl Engine for Litehtml {
         let view = self.find_view_mut(id);
         match page_type {
             PageType::Html(html) => {
+                view.doc_state = None;
+            
                 view.html = html;
                 view.scroll_y = 0.0;
                 view.needs_render = true;
@@ -252,7 +406,10 @@ impl Engine for Litehtml {
     }
 
     fn refresh(&mut self, id: ViewId) {
-        self.find_view_mut(id).needs_render = true;
+        let view = self.find_view_mut(id);
+        view.doc_state = None;
+    
+        view.needs_render = true;
     }
 
     fn go_forward(&mut self, _id: ViewId) {
@@ -277,5 +434,17 @@ impl Engine for Litehtml {
 
     fn get_view(&self, id: ViewId) -> &ImageInfo {
         &self.find_view(id).last_frame
+    }
+
+    fn get_selected_text(&self, id: ViewId) -> Option<String> {
+        self.find_view(id)
+            .doc_state
+            .as_ref()?
+            .selection
+            .selected_text()
+    }
+
+    fn get_selection_rects(&self, id: ViewId) -> &[[f32; 4]] {
+        &self.find_view(id).selection_rects
     }
 }
