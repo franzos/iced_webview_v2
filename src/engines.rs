@@ -112,4 +112,42 @@ pub trait Engine {
     fn get_selection_rects(&self, _id: ViewId) -> &[[f32; 4]] {
         &[]
     }
+
+    /// Take the last anchor click URL from a view, if any.
+    /// Called after mouse events to detect link navigation.
+    fn take_anchor_click(&mut self, _id: ViewId) -> Option<String> {
+        None
+    }
+
+    /// Scroll to a named fragment (e.g. `"section2"` for `#section2`).
+    /// Returns `true` if the fragment was found and the view scrolled.
+    fn scroll_to_fragment(&mut self, _id: ViewId, _fragment: &str) -> bool {
+        false
+    }
+
+    /// Return image URLs discovered during layout that still need fetching.
+    /// Each entry is `(view_id, raw_src, redraw_on_ready)` — the consumer
+    /// resolves URLs and threads `redraw_on_ready` back through
+    /// `load_image_from_bytes`.
+    fn take_pending_images(&mut self) -> Vec<(ViewId, String, bool)> {
+        Vec::new()
+    }
+
+    /// Inject fetched image bytes into a view's container, keyed by the
+    /// raw `src` value from the HTML. When `redraw_on_ready` is true, the
+    /// image doesn't affect layout (CSS background or `<img>` with explicit
+    /// dimensions) so `doc.render()` can be skipped — only a redraw is needed.
+    fn load_image_from_bytes(
+        &mut self,
+        _id: ViewId,
+        _url: &str,
+        _bytes: &[u8],
+        _redraw_on_ready: bool,
+    ) {
+    }
+
+    /// Flush all staged images into the document and redraw.
+    /// Called when all in-flight image fetches have completed so the
+    /// full batch is processed in a single redraw.
+    fn flush_staged_images(&mut self, _id: ViewId, _size: Size<u32>) {}
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use iced::advanced::{
@@ -40,6 +41,11 @@ pub enum Action {
     CopySelection,
     /// Internal: carries the result of a URL fetch for engines without native URL support.
     FetchComplete(ViewId, String, Result<String, String>),
+    /// Internal: carries the result of an image fetch.
+    /// The bool is `redraw_on_ready` — when true, the image doesn't affect
+    /// layout so `doc.render()` can be skipped (redraw only).
+    /// The u64 is the navigation epoch — stale results are discarded.
+    ImageFetchComplete(ViewId, String, Result<Vec<u8>, String>, bool, u64),
 }
 
 /// The Basic WebView widget that creates and shows webview(s)
@@ -60,6 +66,13 @@ where
     title: String,
     on_copy: Option<Box<dyn Fn(String) -> Message>>,
     action_mapper: Option<Arc<dyn Fn(Action) -> Message + Send + Sync>>,
+    /// Number of image fetches currently in flight. Staged images are only
+    /// flushed (triggering an expensive redraw) once this reaches zero, so
+    /// a burst of images causes only one redraw instead of one per image.
+    inflight_images: usize,
+    /// Per-view navigation epoch. Incremented on `GoToUrl` so that image
+    /// fetches spawned for a previous page are discarded when they complete.
+    nav_epochs: HashMap<ViewId, u64>,
 }
 
 impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView<Engine, Message> {
@@ -101,6 +114,8 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
             title: String::new(),
             on_copy: None,
             action_mapper: None,
+            inflight_images: 0,
+            nav_epochs: HashMap::new(),
         }
     }
 }
@@ -269,7 +284,10 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 self.engine.go_forward(self.get_current_view_id());
             }
             Action::GoToUrl(url) => {
+                self.inflight_images = 0;
                 let view_id = self.get_current_view_id();
+                let epoch = self.nav_epochs.entry(view_id).or_insert(0);
+                *epoch = epoch.wrapping_add(1);
                 let url_str = url.to_string();
                 self.engine
                     .goto(view_id, PageType::Url(url_str.clone()));
@@ -303,8 +321,45 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     .handle_keyboard_event(self.get_current_view_id(), event);
             }
             Action::SendMouseEvent(event, point) => {
+                let view_id = self.get_current_view_id();
                 self.engine
-                    .handle_mouse_event(self.get_current_view_id(), point, event);
+                    .handle_mouse_event(view_id, point, event);
+
+                // Check if the click triggered an anchor navigation
+                if let Some(href) = self.engine.take_anchor_click(view_id) {
+                    let current = self.engine.get_url(view_id);
+                    let base = Url::parse(&current).ok();
+                    match Url::parse(&href).or_else(|_| {
+                        base.as_ref()
+                            .ok_or(url::ParseError::RelativeUrlWithoutBase)
+                            .and_then(|b| b.join(&href))
+                    }) {
+                        Ok(resolved) => {
+                            let scheme = resolved.scheme();
+                            if scheme == "http" || scheme == "https" {
+                                // Skip re-fetch for same-page fragment navigation
+                                let is_same_page = base.as_ref().map_or(false, |cur| {
+                                    resolved.scheme() == cur.scheme()
+                                        && resolved.host() == cur.host()
+                                        && resolved.port() == cur.port()
+                                        && resolved.path() == cur.path()
+                                        && resolved.query() == cur.query()
+                                });
+                                if is_same_page {
+                                    if let Some(fragment) = resolved.fragment() {
+                                        self.engine.scroll_to_fragment(view_id, fragment);
+                                    }
+                                } else {
+                                    tasks.push(self.update(Action::GoToUrl(resolved)));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("iced_webview: failed to resolve anchor URL '{href}': {e}");
+                        }
+                    }
+                }
+
                 // Don't request_render here — the periodic Update tick handles
                 // it. Re-rendering inline on every mouse event (especially
                 // scroll) creates a new image Handle each time, causing GPU
@@ -314,9 +369,48 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             Action::Update => {
                 self.engine.update();
                 if self.current_view_index.is_some() {
-                    self.engine
-                        .request_render(self.get_current_view_id(), self.view_size);
+                    let view_id = self.get_current_view_id();
+                    self.engine.request_render(view_id, self.view_size);
+
+                    // Flush staged images only when all fetches are done,
+                    // so the entire batch is drawn in one pass.
+                    if self.inflight_images == 0 {
+                        self.engine.flush_staged_images(view_id, self.view_size);
+                    }
                 }
+
+                // Discover images that need fetching after layout
+                #[cfg(feature = "litehtml")]
+                if let Some(mapper) = &self.action_mapper {
+                    let pending = self.engine.take_pending_images();
+                    for (view_id, src, redraw_on_ready) in pending {
+                        let page_url = self.engine.get_url(view_id);
+                        let resolved = Url::parse(&src)
+                            .or_else(|_| {
+                                Url::parse(&page_url)
+                                    .and_then(|base| base.join(&src))
+                            });
+                        let resolved = match resolved {
+                            Ok(u) => u,
+                            Err(_) => continue,
+                        };
+                        let scheme = resolved.scheme();
+                        if scheme != "http" && scheme != "https" {
+                            continue;
+                        }
+                        self.inflight_images += 1;
+                        let mapper = mapper.clone();
+                        let raw_src = src.clone();
+                        let epoch = *self.nav_epochs.get(&view_id).unwrap_or(&0);
+                        tasks.push(Task::perform(
+                            crate::fetch::fetch_image(resolved.to_string()),
+                            move |result| {
+                                mapper(Action::ImageFetchComplete(view_id, raw_src, result, redraw_on_ready, epoch))
+                            },
+                        ));
+                    }
+                }
+
                 return Task::batch(tasks);
             }
             Action::Resize(size) => {
@@ -357,6 +451,27 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                         self.engine.goto(view_id, PageType::Html(error_html));
                     }
                 }
+            }
+            Action::ImageFetchComplete(view_id, src, result, redraw_on_ready, epoch) => {
+                self.inflight_images = self.inflight_images.saturating_sub(1);
+                let current_epoch = *self.nav_epochs.get(&view_id).unwrap_or(&0);
+                if epoch != current_epoch {
+                    // Stale fetch from a previous navigation — discard.
+                    return Task::batch(tasks);
+                }
+                if self.engine.has_view(view_id) {
+                    match &result {
+                        Ok(bytes) => {
+                            self.engine.load_image_from_bytes(view_id, &src, bytes, redraw_on_ready);
+                        }
+                        Err(e) => {
+                            eprintln!("iced_webview: failed to fetch image '{}': {}", src, e);
+                        }
+                    }
+                }
+                // Don't call request_render here — the periodic Update tick
+                // picks up staged images via request_render's staged check.
+                return Task::batch(tasks);
             }
         };
 
@@ -528,6 +643,8 @@ where
             Event::Mouse(event) => {
                 if let Some(point) = cursor.position_in(layout.bounds()) {
                     shell.publish(Action::SendMouseEvent(event.clone(), point));
+                } else if matches!(event, mouse::Event::CursorLeft) {
+                    shell.publish(Action::SendMouseEvent(event.clone(), Point::ORIGIN));
                 }
             }
             _ => (),

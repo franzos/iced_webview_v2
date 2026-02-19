@@ -8,7 +8,7 @@ use crate::ImageInfo;
 
 use litehtml::pixbuf::PixbufContainer;
 use litehtml::selection::Selection;
-use litehtml::{Document, Position};
+use litehtml::{css_escape_ident, Document, Position};
 
 /// Persistent document and selection state for a view.
 ///
@@ -35,6 +35,10 @@ struct LitehtmlView {
     cursor: Interaction,
     last_frame: ImageInfo,
     needs_render: bool,
+    /// Fetched image bytes waiting to be flushed into the container.
+    /// Accumulated between render cycles so multiple images cause only
+    /// one document rebuild instead of one per image.
+    staged_images: Vec<(String, Vec<u8>, bool)>,
     /// Selection highlight rects in logical coords, scroll-adjusted.
     /// Drawn as iced quads by the widget so the base image Handle stays stable.
     selection_rects: Vec<[f32; 4]>,
@@ -86,6 +90,14 @@ impl Litehtml {
 /// then resizes the container, creates a new Document, and renders the layout.
 fn rebuild_document(view: &mut LitehtmlView) {
     view.doc_state = None;
+
+    // Flush any staged images while doc_state is None (safe — no Document
+    // holds a borrow of the container).
+    if !view.staged_images.is_empty() {
+        for (url, bytes, _) in view.staged_images.drain(..) {
+            view.container.load_image_data(&url, &bytes);
+        }
+    }
 
     let w = view.size.width;
     let h = view.size.height;
@@ -176,18 +188,32 @@ fn rebuild_document(view: &mut LitehtmlView) {
     }
 }
 
-/// Render the full document into the pixel buffer and update `last_frame`.
+/// Draw the document into the pixel buffer and capture `last_frame`.
 ///
-/// The buffer covers the entire content height so the widget can scroll
-/// by offsetting the draw position — no re-render needed per scroll.
-fn draw_view(view: &mut LitehtmlView) {
+/// Resizes the container to fit the full content height, disables CSS
+/// overflow clips, draws, then captures the pixels. The caller provides
+/// a raw `container_ptr` when the container must be mutated while the
+/// Document holds a borrow (flush path); pass `None` for the normal path
+/// where no aliasing is needed.
+fn capture_frame(
+    view: &mut LitehtmlView,
+    container_ptr: Option<*mut PixbufContainer>,
+) {
     let w = view.size.width;
     let full_h = (view.content_height.ceil() as u32).max(view.size.height);
 
-    view.container.resize(w, full_h);
-    // Disable CSS overflow clips so the full document is painted —
-    // overflow: hidden/auto containers won't clip content below their box.
-    view.container.set_ignore_overflow_clips(true);
+    // Resize + set_ignore_overflow_clips: use the raw pointer when provided
+    // (Document holds a borrow), otherwise go through the safe reference.
+    match container_ptr {
+        Some(ptr) => unsafe {
+            (*ptr).resize(w, full_h);
+            (*ptr).set_ignore_overflow_clips(true);
+        },
+        None => {
+            view.container.resize(w, full_h);
+            view.container.set_ignore_overflow_clips(true);
+        }
+    }
 
     if let Some(ref mut state) = view.doc_state {
         let clip = Position {
@@ -198,14 +224,69 @@ fn draw_view(view: &mut LitehtmlView) {
         };
         state.doc.draw(0, 0.0, 0.0, Some(clip));
     }
-    view.container.set_ignore_overflow_clips(false);
+
+    match container_ptr {
+        Some(ptr) => unsafe { (*ptr).set_ignore_overflow_clips(false) },
+        None => view.container.set_ignore_overflow_clips(false),
+    }
 
     let phys_w = view.container.width();
     let phys_h = view.container.height();
     let pixels = unpremultiply_rgba(view.container.pixels());
-
     view.last_frame = ImageInfo::new(pixels, PixelFormat::Rgba, phys_w, phys_h);
     view.needs_render = false;
+}
+
+/// Render the full document into the pixel buffer and update `last_frame`.
+///
+/// The buffer covers the entire content height so the widget can scroll
+/// by offsetting the draw position — no re-render needed per scroll.
+fn draw_view(view: &mut LitehtmlView) {
+    capture_frame(view, None);
+}
+
+/// Flush staged image bytes into the container, optionally re-layout, and
+/// redraw in one pass.
+///
+/// Avoids re-parsing HTML — only calls `doc.render()` (when needed) which is
+/// cheap compared to `Document::from_html`.
+///
+/// # Safety
+///
+/// Uses a raw pointer to mutate the container while the Document holds a
+/// `&'static mut` borrow. Safe in practice because `load_image_data` only
+/// touches the `images` HashMap, which the Document does not access until
+/// the next `render()` / `draw()` call that we control.
+fn flush_images_and_redraw(view: &mut LitehtmlView) {
+    if view.staged_images.is_empty() {
+        return;
+    }
+
+    let w = view.size.width;
+    if w == 0 || view.size.height == 0 {
+        return;
+    }
+
+    // If ANY image has redraw_on_ready == false, layout may have changed
+    // (e.g. <img> without explicit dimensions). Otherwise we can skip
+    // the expensive doc.render() and just redraw.
+    let needs_render = view.staged_images.iter().any(|(_, _, ror)| !ror);
+
+    // SAFETY: The Document borrows the container but doesn't access `images`
+    // right now. We only touch the `images` HashMap via `load_image_data`.
+    let container_ptr = &mut *view.container as *mut PixbufContainer;
+    for (url, bytes, _) in view.staged_images.drain(..) {
+        unsafe { (*container_ptr).load_image_data(&url, &bytes) };
+    }
+
+    if needs_render {
+        if let Some(ref mut state) = view.doc_state {
+            let _ = state.doc.render(w as f32);
+            view.content_height = state.doc.height();
+        }
+    }
+
+    capture_frame(view, Some(container_ptr));
 }
 
 /// Main render entry point: rebuilds the document if needed, then draws.
@@ -227,9 +308,14 @@ fn render_view(view: &mut LitehtmlView) {
 
     if view.doc_state.is_none() {
         rebuild_document(view);
+        draw_view(view);
+    } else if !view.staged_images.is_empty() {
+        // Document exists — inject images, re-layout, and draw in one
+        // pass so the container size stays consistent throughout.
+        flush_images_and_redraw(view);
+    } else {
+        draw_view(view);
     }
-
-    draw_view(view);
 }
 
 /// Convert premultiplied-alpha RGBA pixels to straight alpha.
@@ -250,6 +336,21 @@ fn unpremultiply_rgba(pixels: &[u8]) -> Vec<u8> {
         }
     }
     result
+}
+
+/// Map a CSS cursor value from litehtml to an iced mouse interaction.
+fn css_cursor_to_interaction(cursor: &str) -> Interaction {
+    match cursor {
+        "pointer" => Interaction::Pointer,
+        "text" => Interaction::Text,
+        "crosshair" => Interaction::Crosshair,
+        "grab" => Interaction::Grab,
+        "grabbing" => Interaction::Grabbing,
+        "not-allowed" | "no-drop" => Interaction::NotAllowed,
+        "col-resize" | "ew-resize" => Interaction::ResizingHorizontally,
+        "row-resize" | "ns-resize" => Interaction::ResizingVertically,
+        _ => Interaction::Idle,
+    }
 }
 
 /// Store selection rectangles in document coordinates.
@@ -287,6 +388,13 @@ impl Engine for Litehtml {
         }
     }
 
+    fn flush_staged_images(&mut self, id: ViewId, _size: Size<u32>) {
+        let view = self.find_view_mut(id);
+        if !view.staged_images.is_empty() {
+            render_view(view);
+        }
+    }
+
     fn new_view(&mut self, size: Size<u32>, content: Option<PageType>) -> ViewId {
         let id = rand::thread_rng().gen();
         let w = size.width.max(1);
@@ -311,6 +419,7 @@ impl Engine for Litehtml {
             cursor: Interaction::Idle,
             last_frame: ImageInfo::blank(w, h),
             needs_render: true,
+            staged_images: Vec::new(),
             selection_rects: Vec::new(),
             scroll_y: 0.0,
             content_height: 0.0,
@@ -377,12 +486,22 @@ impl Engine for Litehtml {
                 view.drag_origin = Some((point.x, point.y));
                 view.drag_active = false;
                 if let Some(ref mut state) = view.doc_state {
+                    let doc_y = point.y + view.scroll_y;
+                    state.doc.on_lbutton_down(point.x, doc_y, point.x, point.y);
                     state.selection.clear();
                 }
                 view.selection_rects.clear();
             }
             mouse::Event::CursorMoved { .. } => {
                 let view = self.find_view_mut(id);
+
+                // Notify litehtml of mouse movement for :hover and cursor updates
+                if let Some(ref mut state) = view.doc_state {
+                    let doc_y = point.y + view.scroll_y;
+                    state.doc.on_mouse_over(point.x, doc_y, point.x, point.y);
+                }
+                view.cursor = css_cursor_to_interaction(view.container.cursor());
+
                 if let Some((ox, oy)) = view.drag_origin {
                     let dx = point.x - ox;
                     let dy = point.y - oy;
@@ -420,8 +539,26 @@ impl Engine for Litehtml {
             }
             mouse::Event::ButtonReleased(mouse::Button::Left) => {
                 let view = self.find_view_mut(id);
+                let was_dragging = view.drag_active;
                 view.drag_active = false;
                 view.drag_origin = None;
+
+                // Always notify litehtml to clear :active pseudo-class state
+                if let Some(ref mut state) = view.doc_state {
+                    let doc_y = point.y + view.scroll_y;
+                    state.doc.on_lbutton_up(point.x, doc_y, point.x, point.y);
+                }
+                // Discard anchor clicks produced during text selection
+                if was_dragging {
+                    view.container.take_anchor_click();
+                }
+            }
+            mouse::Event::CursorLeft => {
+                let view = self.find_view_mut(id);
+                if let Some(ref mut state) = view.doc_state {
+                    state.doc.on_mouse_leave();
+                }
+                view.cursor = Interaction::Idle;
             }
             _ => {}
         }
@@ -446,6 +583,10 @@ impl Engine for Litehtml {
         match page_type {
             PageType::Html(html) => {
                 view.doc_state = None;
+                // Clear image state from the previous page so stale fetches
+                // don't interfere and new images are discovered fresh.
+                view.staged_images.clear();
+                view.container.clear_pending_images();
 
                 view.html = html;
                 view.scroll_y = 0.0;
@@ -511,5 +652,56 @@ impl Engine for Litehtml {
 
     fn get_selection_rects(&self, id: ViewId) -> &[[f32; 4]] {
         &self.find_view(id).selection_rects
+    }
+
+    fn take_anchor_click(&mut self, id: ViewId) -> Option<String> {
+        self.find_view_mut(id).container.take_anchor_click()
+    }
+
+    fn take_pending_images(&mut self) -> Vec<(ViewId, String, bool)> {
+        let mut result = Vec::new();
+        for view in &mut self.views {
+            for (src, redraw_on_ready) in view.container.take_pending_images() {
+                result.push((view.id, src, redraw_on_ready));
+            }
+        }
+        result
+    }
+
+    fn load_image_from_bytes(&mut self, id: ViewId, url: &str, bytes: &[u8], redraw_on_ready: bool) {
+        let view = self.find_view_mut(id);
+        view.staged_images.push((url.to_string(), bytes.to_vec(), redraw_on_ready));
+    }
+
+    fn scroll_to_fragment(&mut self, id: ViewId, fragment: &str) -> bool {
+        let view = self.find_view_mut(id);
+        let state = match view.doc_state.as_ref() {
+            Some(s) => s,
+            None => return false,
+        };
+        let root = match state.doc.root() {
+            Some(r) => r,
+            None => return false,
+        };
+
+        // Try #id first, then [name="fragment"] (matches browser behavior).
+        // Escape CSS meta-characters so fragments like "foo.bar" don't get
+        // misinterpreted as compound selectors.
+        let escaped = css_escape_ident(fragment);
+        let id_selector = format!("#{escaped}");
+        let el = root.select_one(&id_selector).or_else(|| {
+            let quoted = fragment.replace('\\', "\\\\").replace('"', "\\\"");
+            let name_selector = format!("[name=\"{quoted}\"]");
+            root.select_one(&name_selector)
+        });
+
+        if let Some(el) = el {
+            let pos = el.placement();
+            let max_scroll = (view.content_height - view.size.height as f32).max(0.0);
+            view.scroll_y = pos.y.clamp(0.0, max_scroll);
+            true
+        } else {
+            false
+        }
     }
 }
