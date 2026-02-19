@@ -4,8 +4,8 @@ version = "0.0.6"
 edition = "2021"
 rust-version = "1.81.0"
 description = "An easily embedded webview library for iced"
-authors = ["LegitCamper"]
-repository = "https://github.com/LegitCamper/iced_webview/"
+authors = ["LegitCamper", "Franz Geffke <mail@gofranz.com>"]
+repository = "https://github.com/franzos/iced_webview/"
 license = "Apache-2.0"
 readme = "README.md"
 
@@ -23,7 +23,7 @@ lto = "thin"
 default = ["ultralight"]
 ultralight = ["dep:ul-next"]
 ultralight-resources = []
-litehtml = ["dep:litehtml"]
+litehtml = ["dep:litehtml", "dep:reqwest"]
 docs_only = []
 
 [dependencies]
@@ -32,9 +32,16 @@ iced = { version = "0.14", features = ["advanced", "image", "tokio", "lazy"] }
 rand = "0.8.5"
 smol_str = "0.2.2"
 ul-next = { version = "0.4", optional = true }
-litehtml = { version = "0.2", features = ["pixbuf", "html"], optional = true }
+litehtml = { version = "0.2.1", features = ["pixbuf", "html"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 url = "2.5.2"
 html = "0.6.3"
 
 [[example]]
 name = "email"
+
+[[example]]
+name = "embedded_webview"
+
+[[example]]
+name = "multi_webview"

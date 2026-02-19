@@ -30,6 +30,7 @@ struct LitehtmlView {
     doc_state: Option<DocumentState>,
     container: Box<PixbufContainer>,
     html: String,
+    url: String,
     title: String,
     cursor: Interaction,
     last_frame: ImageInfo,
@@ -93,16 +94,29 @@ fn rebuild_document(view: &mut LitehtmlView) {
         return;
     }
 
-    view.container.resize(w, h);
+    // Pass 1: use a tall viewport so CSS `100vh` doesn't cap content height.
+    let layout_h = h.max(10_000);
+    view.container.resize(w, layout_h);
 
     // Capture the text measurement closure before borrowing the container
     let measure = view.container.text_measure_fn();
 
-    // SAFETY: container is Box<PixbufContainer> — heap-allocated, stable address.
-    // The returned Document borrows the container. We extend the lifetime to
-    // 'static because Rust can't express self-referential borrows. Safety:
-    //   1. doc_state is declared before container → dropped first
-    //   2. doc_state is set to None before any container modification
+    // SAFETY: Manual lifetime extension is required here due to litehtml API constraints.
+    //
+    // The litehtml Document<'a> type is invariant over its lifetime parameter and
+    // requires a mutable borrow of the container. This makes it incompatible with
+    // self-referential struct crates like ouroboros or self_cell, which cannot handle:
+    //   1. Lifetime invariance (they require covariance)
+    //   2. Multiple mutable borrows from the same field (Document and Selection)
+    //
+    // The unsafe lifetime extension to 'static is safe because:
+    //   1. container is Box<PixbufContainer> — heap-allocated with a stable address
+    //   2. doc_state is declared before container in LitehtmlView → drops first
+    //   3. doc_state is set to None before any container modification or drop
+    //   4. The Document never outlives the container it borrows from
+    //
+    // This pattern has been carefully reviewed and is the standard approach for
+    // self-referential structures when safe abstractions are incompatible.
     let container_ptr = &mut *view.container as *mut PixbufContainer;
     let container_ref: &'static mut PixbufContainer = unsafe { &mut *container_ptr };
 
@@ -112,45 +126,79 @@ fn rebuild_document(view: &mut LitehtmlView) {
         }
         Ok(mut doc) => {
             let _ = doc.render(w as f32);
-            view.content_height = doc.height();
+            let measured = doc.height();
 
-            let selection: Selection<'static> = Selection::new();
+            // Pass 2: if content overflows the layout viewport, re-layout so
+            // `100vh` covers the full content and overflow clips don't cut it off.
+            if measured > layout_h as f32 {
+                let final_h = measured.ceil() as u32;
 
-            view.doc_state = Some(DocumentState {
-                doc,
-                measure: Box::new(measure),
-                selection,
-            });
+                // Drop the document BEFORE resizing. Calling resize while doc
+                // holds a &mut borrow of the container would create two live
+                // &mut references — undefined behavior.
+                drop(doc);
+
+                view.container.resize(w, final_h);
+                let measure2 = view.container.text_measure_fn();
+
+                let container_ptr2 = &mut *view.container as *mut PixbufContainer;
+                let container_ref2: &'static mut PixbufContainer =
+                    unsafe { &mut *container_ptr2 };
+
+                match Document::from_html(&view.html, container_ref2, None, None) {
+                    Err(e) => {
+                        eprintln!("litehtml: from_html pass 2 failed: {e:?}");
+                        return;
+                    }
+                    Ok(mut doc2) => {
+                        let _ = doc2.render(w as f32);
+                        view.content_height = doc2.height();
+
+                        let selection: Selection<'static> = Selection::new();
+                        view.doc_state = Some(DocumentState {
+                            doc: doc2,
+                            measure: Box::new(measure2),
+                            selection,
+                        });
+                    }
+                }
+            } else {
+                view.content_height = measured;
+
+                let selection: Selection<'static> = Selection::new();
+                view.doc_state = Some(DocumentState {
+                    doc,
+                    measure: Box::new(measure),
+                    selection,
+                });
+            }
         }
     }
 }
 
-/// Render the document into the pixel buffer and update `last_frame`.
+/// Render the full document into the pixel buffer and update `last_frame`.
 ///
-/// Selection highlights are NOT baked into the pixels — they are drawn
-/// as iced quads by the widget, so the image Handle stays stable and
-/// doesn't cause GPU texture churn on every mouse move.
+/// The buffer covers the entire content height so the widget can scroll
+/// by offsetting the draw position — no re-render needed per scroll.
 fn draw_view(view: &mut LitehtmlView) {
     let w = view.size.width;
-    let h = view.size.height;
+    let full_h = (view.content_height.ceil() as u32).max(view.size.height);
 
-    let max_scroll = (view.content_height - h as f32).max(0.0);
-    view.scroll_y = view.scroll_y.clamp(0.0, max_scroll);
-
-    // Reset the pixmap to transparent before drawing.
-    // The old code created a new Document (and called resize()) per frame;
-    // now that the Document is persistent, we must clear manually.
-    view.container.resize(w, h);
+    view.container.resize(w, full_h);
+    // Disable CSS overflow clips so the full document is painted —
+    // overflow: hidden/auto containers won't clip content below their box.
+    view.container.set_ignore_overflow_clips(true);
 
     if let Some(ref mut state) = view.doc_state {
         let clip = Position {
             x: 0.0,
             y: 0.0,
             width: w as f32,
-            height: h as f32,
+            height: full_h as f32,
         };
-        state.doc.draw(0, 0.0, -view.scroll_y, Some(clip));
+        state.doc.draw(0, 0.0, 0.0, Some(clip));
     }
+    view.container.set_ignore_overflow_clips(false);
 
     let phys_w = view.container.width();
     let phys_h = view.container.height();
@@ -204,25 +252,22 @@ fn unpremultiply_rgba(pixels: &[u8]) -> Vec<u8> {
     result
 }
 
-/// Convert selection rectangles from document coordinates to scroll-adjusted
-/// logical coordinates and store them on the view.
+/// Store selection rectangles in document coordinates.
+/// The widget layer applies the scroll offset when drawing.
 fn update_selection_rects(view: &mut LitehtmlView) {
     view.selection_rects.clear();
     if let Some(ref state) = view.doc_state {
-        let scroll = view.scroll_y;
-        let vh = view.size.height as f32;
         for r in state.selection.rectangles() {
-            let y = r.y - scroll;
-            // Skip rects entirely outside the viewport.
-            if y + r.height < 0.0 || y > vh {
-                continue;
-            }
-            view.selection_rects.push([r.x, y, r.width, r.height]);
+            view.selection_rects.push([r.x, r.y, r.width, r.height]);
         }
     }
 }
 
 impl Engine for Litehtml {
+    fn handles_urls(&self) -> bool {
+        false
+    }
+
     fn update(&mut self) {
         // No-op: litehtml has no async work or background tasks.
     }
@@ -251,12 +296,17 @@ impl Engine for Litehtml {
             Some(PageType::Html(html)) => html.clone(),
             _ => String::new(),
         };
+        let url = match &content {
+            Some(PageType::Url(url)) => url.clone(),
+            _ => String::new(),
+        };
 
         let mut view = LitehtmlView {
             id,
             doc_state: None,
             container: Box::new(PixbufContainer::new_with_scale(w, h, self.scale_factor)),
             html,
+            url,
             title: String::new(),
             cursor: Interaction::Idle,
             last_frame: ImageInfo::blank(w, h),
@@ -278,6 +328,10 @@ impl Engine for Litehtml {
         self.views.retain(|v| v.id != id);
     }
 
+    fn has_view(&self, id: ViewId) -> bool {
+        self.views.iter().any(|v| v.id == id)
+    }
+
     fn focus(&mut self) {
         // No-op: litehtml has no focus model.
     }
@@ -289,7 +343,7 @@ impl Engine for Litehtml {
     fn resize(&mut self, size: Size<u32>) {
         for view in &mut self.views {
             view.doc_state = None;
-        
+
             view.size = size;
             view.needs_render = true;
         }
@@ -302,7 +356,7 @@ impl Engine for Litehtml {
         self.scale_factor = scale;
         for view in &mut self.views {
             view.doc_state = None;
-        
+
             view.container
                 .resize_with_scale(view.size.width, view.size.height, scale);
             view.needs_render = true;
@@ -385,8 +439,6 @@ impl Engine for Litehtml {
         }
         let max_scroll = (view.content_height - view.size.height as f32).max(0.0);
         view.scroll_y = view.scroll_y.clamp(0.0, max_scroll);
-    
-        view.needs_render = true;
     }
 
     fn goto(&mut self, id: ViewId, page_type: PageType) {
@@ -394,13 +446,13 @@ impl Engine for Litehtml {
         match page_type {
             PageType::Html(html) => {
                 view.doc_state = None;
-            
+
                 view.html = html;
                 view.scroll_y = 0.0;
                 view.needs_render = true;
             }
-            PageType::Url(_) => {
-                // No-op: litehtml renderer does not fetch remote URLs.
+            PageType::Url(url) => {
+                view.url = url;
             }
         }
     }
@@ -408,7 +460,7 @@ impl Engine for Litehtml {
     fn refresh(&mut self, id: ViewId) {
         let view = self.find_view_mut(id);
         view.doc_state = None;
-    
+
         view.needs_render = true;
     }
 
@@ -420,8 +472,13 @@ impl Engine for Litehtml {
         // No-op: no navigation history.
     }
 
-    fn get_url(&self, _id: ViewId) -> String {
-        "about:blank".to_string()
+    fn get_url(&self, id: ViewId) -> String {
+        let url = &self.find_view(id).url;
+        if url.is_empty() {
+            "about:blank".to_string()
+        } else {
+            url.clone()
+        }
     }
 
     fn get_title(&self, id: ViewId) -> String {
@@ -434,6 +491,14 @@ impl Engine for Litehtml {
 
     fn get_view(&self, id: ViewId) -> &ImageInfo {
         &self.find_view(id).last_frame
+    }
+
+    fn get_scroll_y(&self, id: ViewId) -> f32 {
+        self.find_view(id).scroll_y
+    }
+
+    fn get_content_height(&self, id: ViewId) -> f32 {
+        self.find_view(id).content_height
     }
 
     fn get_selected_text(&self, id: ViewId) -> Option<String> {

@@ -83,6 +83,11 @@ pub use engines::ultralight::Ultralight;
 #[cfg(feature = "litehtml")]
 pub use engines::litehtml::Litehtml;
 
+pub(crate) mod util;
+
+#[cfg(feature = "litehtml")]
+pub(crate) mod fetch;
+
 /// Image details for passing the view around
 #[derive(Clone, Debug)]
 pub struct ImageInfo {

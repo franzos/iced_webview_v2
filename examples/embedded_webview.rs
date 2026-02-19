@@ -3,8 +3,13 @@ use iced::{
     widget::{button, column, container, row, text},
     Element, Length, Subscription, Task,
 };
-use iced_webview::{Action, PageType, Ultralight, WebView};
+use iced_webview::{Action, PageType, WebView};
 use std::time::Duration;
+
+#[cfg(feature = "ultralight")]
+type Engine = iced_webview::Ultralight;
+#[cfg(all(feature = "litehtml", not(feature = "ultralight")))]
+type Engine = iced_webview::Litehtml;
 
 static URL: &'static str = "https://docs.rs/iced/latest/iced/index.html";
 
@@ -26,7 +31,7 @@ enum Message {
 }
 
 struct App {
-    webview: WebView<Ultralight, Message>,
+    webview: WebView<Engine, Message>,
     show_webview: bool,
     webview_url: Option<String>,
     num_views: u32,
@@ -37,7 +42,8 @@ impl App {
     fn new() -> (Self, Task<Message>) {
         let webview = WebView::new()
             .on_create_view(Message::WebviewCreated)
-            .on_url_change(Message::UrlChanged);
+            .on_url_change(Message::UrlChanged)
+            .on_action(Message::WebView);
         (
             Self {
                 webview,

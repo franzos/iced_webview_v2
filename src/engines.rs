@@ -47,6 +47,10 @@ pub trait Engine {
     fn new_view(&mut self, size: Size<u32>, content: Option<PageType>) -> ViewId;
     /// Removes desired view
     fn remove_view(&mut self, id: ViewId);
+    /// Whether a view with this id currently exists.
+    fn has_view(&self, _id: ViewId) -> bool {
+        false
+    }
 
     /// Focuses webview
     fn focus(&mut self);
@@ -56,6 +60,12 @@ pub trait Engine {
     fn resize(&mut self, size: Size<u32>);
     /// Set the display scale factor for HiDPI rendering. Default is no-op.
     fn set_scale_factor(&mut self, _scale: f32) {}
+
+    /// Whether this engine can fetch and render URLs natively.
+    /// Engines that return `false` rely on the webview layer to fetch HTML.
+    fn handles_urls(&self) -> bool {
+        true
+    }
 
     /// lets the engine handle keyboard events
     fn handle_keyboard_event(&mut self, id: ViewId, event: keyboard::Event);
@@ -81,6 +91,16 @@ pub trait Engine {
     fn get_cursor(&self, id: ViewId) -> Interaction;
     /// Gets cpu renderered webview
     fn get_view(&self, id: ViewId) -> &ImageInfo;
+
+    /// Current vertical scroll offset (logical pixels).
+    fn get_scroll_y(&self, _id: ViewId) -> f32 {
+        0.0
+    }
+
+    /// Total content height (logical pixels). Zero means the engine manages scrolling.
+    fn get_content_height(&self, _id: ViewId) -> f32 {
+        0.0
+    }
 
     /// Gets the currently selected text from a view, if any.
     fn get_selected_text(&self, _id: ViewId) -> Option<String> {

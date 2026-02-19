@@ -165,8 +165,17 @@ impl Engine for Ultralight {
             .create_view(size.width, size.height, &self.view_config, None)
             .expect("Failed to create view");
 
-        // TODO: debug why new views are slanted unless do + 10/ - 10
-        // maybe causes the fuzzyness
+        // Workaround: Ultralight requires an explicit resize after view creation to
+        // properly initialize internal rendering state. Without this, newly created
+        // views render with visual artifacts (slanted/fuzzy appearance).
+        //
+        // The offset resize (+10 width, -10 height) followed by the correct resize
+        // in the calling code forces Ultralight to reinitialize its buffers properly.
+        // This has been tested and removing it causes rendering issues.
+        //
+        // Root cause: Likely a timing or initialization bug in Ultralight where
+        // create_view doesn't fully initialize all rendering state. The resize
+        // operation triggers the missing initialization.
         view.resize(size.width + 10, size.height - 10);
 
         let surface = view.surface().expect("Failed to get surface of new view");
@@ -219,6 +228,10 @@ impl Engine for Ultralight {
 
     fn remove_view(&mut self, id: ViewId) {
         self.views.retain(|view| view.id != id);
+    }
+
+    fn has_view(&self, id: ViewId) -> bool {
+        self.views.iter().any(|v| v.id == id)
     }
 
     fn goto(&mut self, id: ViewId, page_type: PageType) {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use iced::advanced::{
     self, layout,
     renderer::{self},
@@ -36,6 +38,8 @@ pub enum Action {
     Resize(Size<u32>),
     /// Copy the current text selection to clipboard
     CopySelection,
+    /// Internal: carries the result of a URL fetch for engines without native URL support.
+    FetchComplete(ViewId, String, Result<String, String>),
 }
 
 /// The Basic WebView widget that creates and shows webview(s)
@@ -55,6 +59,7 @@ where
     on_title_change: Option<Box<dyn Fn(String) -> Message>>,
     title: String,
     on_copy: Option<Box<dyn Fn(String) -> Message>>,
+    action_mapper: Option<Arc<dyn Fn(Action) -> Message + Send + Sync>>,
 }
 
 impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView<Engine, Message> {
@@ -95,6 +100,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
             on_title_change: None,
             title: String::new(),
             on_copy: None,
+            action_mapper: None,
         }
     }
 }
@@ -145,6 +151,17 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
         self
     }
 
+    /// Provide a mapper from Action to Message so the webview can spawn async
+    /// tasks (e.g. URL fetches) that route back through the update loop.
+    /// Required for URL navigation on engines that don't handle URLs natively.
+    pub fn on_action(
+        mut self,
+        mapper: impl Fn(Action) -> Message + Send + Sync + 'static,
+    ) -> Self {
+        self.action_mapper = Some(Arc::new(mapper));
+        self
+    }
+
     /// Passes update to webview
     pub fn update(&mut self, action: Action) -> Task<Message> {
         let mut tasks = Vec::new();
@@ -168,7 +185,16 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
 
         match action {
             Action::ChangeView(index) => {
-                // TODO: get around new views not rendering??
+                // Workaround: Force re-render when switching views by triggering resize.
+                //
+                // When switching to a different view index, the view doesn't render properly
+                // without this resize workaround. The offset resize (+10 width, -10 height)
+                // followed by correct resize forces the engine to refresh its rendering state
+                // for the newly selected view.
+                //
+                // This is related to the Ultralight initialization issue (see ultralight.rs)
+                // where views need a resize operation to fully initialize rendering state.
+                // Simply calling request_render alone is not sufficient.
                 {
                     self.view_size.width += 10;
                     self.view_size.height -= 10;
@@ -199,8 +225,38 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 }
             }
             Action::CreateView(page_type) => {
-                let id = self.engine.new_view(self.view_size, Some(page_type));
-                self.view_ids.push(id);
+                if let PageType::Url(url) = page_type {
+                    if !self.engine.handles_urls() {
+                        let id = self.engine.new_view(self.view_size, None);
+                        self.view_ids.push(id);
+                        self.engine.goto(id, PageType::Url(url.clone()));
+
+                        #[cfg(feature = "litehtml")]
+                        if let Some(mapper) = &self.action_mapper {
+                            let mapper = mapper.clone();
+                            let url_clone = url.clone();
+                            tasks.push(Task::perform(
+                                crate::fetch::fetch_html(url),
+                                move |result| {
+                                    mapper(Action::FetchComplete(id, url_clone, result))
+                                },
+                            ));
+                        } else {
+                            eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
+                        }
+
+                        #[cfg(not(feature = "litehtml"))]
+                        eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
+                    } else {
+                        let id = self
+                            .engine
+                            .new_view(self.view_size, Some(PageType::Url(url)));
+                        self.view_ids.push(id);
+                    }
+                } else {
+                    let id = self.engine.new_view(self.view_size, Some(page_type));
+                    self.view_ids.push(id);
+                }
 
                 if let Some(on_view_create) = &self.on_create_view {
                     tasks.push(Task::done(on_view_create.clone()))
@@ -213,8 +269,31 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 self.engine.go_forward(self.get_current_view_id());
             }
             Action::GoToUrl(url) => {
+                let view_id = self.get_current_view_id();
+                let url_str = url.to_string();
                 self.engine
-                    .goto(self.get_current_view_id(), PageType::Url(url.to_string()));
+                    .goto(view_id, PageType::Url(url_str.clone()));
+
+                #[cfg(feature = "litehtml")]
+                if !self.engine.handles_urls() {
+                    if let Some(mapper) = &self.action_mapper {
+                        let mapper = mapper.clone();
+                        let fetch_url = url_str.clone();
+                        tasks.push(Task::perform(
+                            crate::fetch::fetch_html(fetch_url),
+                            move |result| {
+                                mapper(Action::FetchComplete(view_id, url_str, result))
+                            },
+                        ));
+                    } else {
+                        eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
+                    }
+                }
+
+                #[cfg(not(feature = "litehtml"))]
+                if !self.engine.handles_urls() {
+                    eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
+                }
             }
             Action::Refresh => {
                 self.engine.refresh(self.get_current_view_id());
@@ -223,9 +302,14 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 self.engine
                     .handle_keyboard_event(self.get_current_view_id(), event);
             }
-            Action::SendMouseEvent(point, event) => {
+            Action::SendMouseEvent(event, point) => {
                 self.engine
-                    .handle_mouse_event(self.get_current_view_id(), event, point);
+                    .handle_mouse_event(self.get_current_view_id(), point, event);
+                // Don't request_render here — the periodic Update tick handles
+                // it. Re-rendering inline on every mouse event (especially
+                // scroll) creates a new image Handle each time, causing GPU
+                // texture churn and visible gray flashes.
+                return Task::batch(tasks);
             }
             Action::Update => {
                 self.engine.update();
@@ -239,6 +323,11 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 if self.view_size != size {
                     self.view_size = size;
                     self.engine.resize(size);
+                } else {
+                    // No-op resize (published every frame because the widget
+                    // is recreated with bounds 0,0). Skip request_render to
+                    // avoid texture churn during scrolling.
+                    return Task::batch(tasks);
                 }
             }
             Action::CopySelection => {
@@ -247,6 +336,25 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                         if let Some(on_copy) = &self.on_copy {
                             tasks.push(Task::done((on_copy)(text)));
                         }
+                    }
+                }
+                return Task::batch(tasks);
+            }
+            Action::FetchComplete(view_id, url, result) => {
+                if !self.engine.has_view(view_id) {
+                    return Task::batch(tasks);
+                }
+                match result {
+                    Ok(html) => {
+                        self.engine.goto(view_id, PageType::Html(html));
+                    }
+                    Err(e) => {
+                        let error_html = format!(
+                            "<html><body><h1>Failed to load</h1><p>{}</p><p>{}</p></body></html>",
+                            crate::util::html_escape(&url),
+                            crate::util::html_escape(&e),
+                        );
+                        self.engine.goto(view_id, PageType::Html(error_html));
                     }
                 }
             }
@@ -267,6 +375,8 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             self.engine.get_view(id),
             self.engine.get_cursor(id),
             self.engine.get_selection_rects(id),
+            self.engine.get_scroll_y(id),
+            self.engine.get_content_height(id),
         )
         .into()
     }
@@ -282,15 +392,25 @@ struct WebViewWidget<'a> {
     cursor: Interaction,
     bounds: Size<u32>,
     selection_rects: &'a [[f32; 4]],
+    scroll_y: f32,
+    content_height: f32,
 }
 
 impl<'a> WebViewWidget<'a> {
-    fn new(image_info: &ImageInfo, cursor: Interaction, selection_rects: &'a [[f32; 4]]) -> Self {
+    fn new(
+        image_info: &ImageInfo,
+        cursor: Interaction,
+        selection_rects: &'a [[f32; 4]],
+        scroll_y: f32,
+        content_height: f32,
+    ) -> Self {
         Self {
             handle: image_info.as_handle(),
             cursor,
             bounds: Size::new(0, 0),
             selection_rects,
+            scroll_y,
+            content_height,
         }
     }
 }
@@ -327,23 +447,41 @@ where
     ) {
         let bounds = layout.bounds();
 
-        renderer.draw_image(
-            core_image::Image::new(self.handle.clone()).snap(true),
-            bounds,
-            *viewport,
-        );
+        if self.content_height > 0.0 {
+            // Full-document buffer: draw at negative y offset to scroll,
+            // clipped to widget bounds. The Handle stays stable across frames.
+            renderer.with_layer(bounds, |renderer| {
+                let image_bounds = Rectangle {
+                    x: bounds.x,
+                    y: bounds.y - self.scroll_y,
+                    width: bounds.width,
+                    height: self.content_height,
+                };
+                renderer.draw_image(
+                    core_image::Image::new(self.handle.clone()).snap(true),
+                    image_bounds,
+                    *viewport,
+                );
+            });
+        } else {
+            renderer.draw_image(
+                core_image::Image::new(self.handle.clone()).snap(true),
+                bounds,
+                *viewport,
+            );
+        }
 
-        // Selection highlights must be in a separate layer so they render
-        // on top of the image (within a single layer, iced batches quads
-        // before images).
+        // Selection highlights — stored in document coordinates,
+        // offset by scroll_y to match the scrolled content image.
         if !self.selection_rects.is_empty() {
             let rects = self.selection_rects;
+            let scroll_y = self.scroll_y;
             renderer.with_layer(bounds, |renderer| {
                 let highlight = iced::Color::from_rgba(0.26, 0.52, 0.96, 0.3);
                 for rect in rects {
                     let quad_bounds = Rectangle {
                         x: bounds.x + rect[0],
-                        y: bounds.y + rect[1],
+                        y: bounds.y + rect[1] - scroll_y,
                         width: rect[2],
                         height: rect[3],
                     };
