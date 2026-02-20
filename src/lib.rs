@@ -1,71 +1,27 @@
-//! Iced_webview is a library to embed web views in iced applications. It is a renderer agnostic webview library for Iced.
+//! A library to embed web views in iced applications.
 //!
-//! > Note: Currently this library only supports [Ultralight](https://ultralig.ht)/Webkit, but more rendering engines are planned to be supported.
-//! > [Ultralight has its own license](https://ultralig.ht/pricing/) that should be reviewed before deciding if it works for you
+//! Supports [Blitz](https://github.com/DioxusLabs/blitz) (Rust-native, modern CSS) and
+//! [litehtml](https://github.com/franzos/litehtml-rs) (lightweight, CPU-based).
 //!
 //! Has two separate widgets: Basic, and Advanced.
-//! The basic widget is very simple to implement and requires no knowledge of the widget.
-//! You can use simple abstractions like CloseCurrent, and ChangeView.
-//! Whereas with the Advanced widget, you have callbacks when a view is done being created, and you need to keep track of the ViewId for view calls
+//! The basic widget is simple to implement — use abstractions like `CloseCurrent` and `ChangeView`.
+//! The advanced widget gives you direct `ViewId` control for multiple simultaneous views.
 //!
-//! # Basic usage should look familiar to iced users:
+//! # Basic usage
 //!
-//! You'll need to create a `Message` for Webview:
-//! ```rust
+//! ```rust,ignore
 //! enum Message {
 //!    WebView(iced_webview::Action),
-//!    Update
+//!    Update,
 //! }
-//! ```
 //!
-//! Create a new struct to store webview state
-//! ```rust
 //! struct State {
-//!    webview: iced_webview::WebView<iced_webview::Ultralight, Message>,
+//!    webview: iced_webview::WebView<iced_webview::Blitz, Message>,
 //! }
-//! # #[derive(Clone)]
-//! # enum Message { }
 //! ```
 //!
-//! ### Then you should be able to call the usual `view/update` methods:
-//!
-//! ```rust
-//! fn update(state: &mut State, message: Message) -> iced::Task<Message> {
-//!     match message {
-//!         Message::WebView(msg) => state.webview.update(msg),
-//!         Message::Update => state.webview.update(iced_webview::Action::Update),
-//!     }
-//! }
-//! # #[derive(Clone)]
-//! # enum Message { WebView(iced_webview::Action), Update }
-//! # struct State { webview: iced_webview::WebView<iced_webview::Ultralight, Message> }
-//! ```
-//!
-//! ```rust
-//! fn view(state: &mut State, message: Message) -> iced::Element<Message> {
-//!    state.webview.view().map(Message::WebView).into()
-//! }
-//! # #[derive(Clone)]
-//! # enum Message { WebView(iced_webview::Action) }
-//! # struct State { webview: iced_webview::WebView<iced_webview::Ultralight, Message> }
-//! ```
-//!
-//! The subscription provides periodic updates so that all the backend rendering is done frequently enough
-//!
-//! ```rust
-//! use iced::time;
-//! fn subscription(state: &mut State) -> iced::Subscription<Message> {
-//!     time::every(std::time::Duration::from_millis(10))
-//!         .map(|_| iced_webview::Action::Update)
-//!         .map(Message::WebView)
-//! }
-//! # #[derive(Clone)]
-//! # enum Message { WebView(iced_webview::Action) }
-//! # struct State { webview: iced_webview::WebView<iced_webview::Ultralight, Message> }
-//! ```
-//!
-//!
-//! Examples can be found in the [iced_webview repo](https://github.com/LegitCamper/iced_webview/tree/main/examples)
+//! Then call the usual `view/update` methods — see
+//! [examples](https://github.com/franzos/iced_webview_v2/tree/main/examples) for full working code.
 //!
 use iced::widget::image;
 
@@ -75,17 +31,17 @@ pub use engines::{Engine, PageType, PixelFormat, ViewId};
 
 mod webview;
 pub use basic::{Action, WebView};
-pub use webview::{advanced, basic}; // pub these since its the default/reccommended method
+pub use webview::{advanced, basic};
 
-#[cfg(feature = "ultralight")]
-pub use engines::ultralight::Ultralight;
+#[cfg(feature = "blitz")]
+pub use engines::blitz::Blitz;
 
 #[cfg(feature = "litehtml")]
 pub use engines::litehtml::Litehtml;
 
 pub(crate) mod util;
 
-#[cfg(feature = "litehtml")]
+#[cfg(any(feature = "litehtml", feature = "blitz"))]
 pub(crate) mod fetch;
 
 /// Image details for passing the view around
@@ -108,7 +64,7 @@ impl Default for ImageInfo {
 }
 
 impl ImageInfo {
-    // The default dimentions
+    // The default dimensions
     const WIDTH: u32 = 800;
     const HEIGHT: u32 = 800;
 

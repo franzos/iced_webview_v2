@@ -6,11 +6,11 @@ use iced::{
 use iced_webview::{Action, PageType, WebView};
 use std::time::Duration;
 
-#[cfg(feature = "litehtml")]
-type Engine = iced_webview::Litehtml;
+#[cfg(feature = "blitz")]
+type Engine = iced_webview::Blitz;
 
-#[cfg(all(feature = "ultralight", not(feature = "litehtml")))]
-type Engine = iced_webview::Ultralight;
+#[cfg(all(feature = "litehtml", not(feature = "blitz")))]
+type Engine = iced_webview::Litehtml;
 
 /// Sample email HTML -- table-based layout typical of marketing emails.
 static EMAIL_HTML: &str = r##"

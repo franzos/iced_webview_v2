@@ -5,12 +5,17 @@ use iced::{
 };
 use iced_webview::{
     advanced::{Action, WebView},
-    PageType, Ultralight, ViewId,
+    PageType, ViewId,
 };
+
+#[cfg(feature = "blitz")]
+type Engine = iced_webview::Blitz;
+#[cfg(all(feature = "litehtml", not(feature = "blitz")))]
+type Engine = iced_webview::Litehtml;
 use std::time::Duration;
 
-static URL1: &'static str = "https://docs.rs/iced/latest/iced/index.html";
-static URL2: &'static str = "https://github.com/LegitCamper/iced_webview";
+static URL1: &str = "https://docs.rs/iced/latest/iced/index.html";
+static URL2: &str = "https://github.com/franzos/iced_webview_v2";
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
@@ -26,13 +31,15 @@ enum Message {
 }
 
 struct App {
-    webview: WebView<Ultralight, Message>,
+    webview: WebView<Engine, Message>,
     webviews: (Option<ViewId>, Option<ViewId>),
 }
 
 impl App {
     fn new() -> (Self, Task<Message>) {
-        let webview = WebView::new().on_create_view(Message::CreatedNewWebView);
+        let webview = WebView::new()
+            .on_create_view(Message::CreatedNewWebView)
+            .on_action(Message::WebView);
         (
             Self {
                 webview,

@@ -202,27 +202,9 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
 
         match action {
             Action::ChangeView(index) => {
-                // Workaround: Force re-render when switching views by triggering resize.
-                //
-                // When switching to a different view index, the view doesn't render properly
-                // without this resize workaround. The offset resize (+10 width, -10 height)
-                // followed by correct resize forces the engine to refresh its rendering state
-                // for the newly selected view.
-                //
-                // This is related to the Ultralight initialization issue (see ultralight.rs)
-                // where views need a resize operation to fully initialize rendering state.
-                // Simply calling request_render alone is not sufficient.
-                {
-                    self.view_size.width += 10;
-                    self.view_size.height -= 10;
-                    self.engine.resize(self.view_size);
-                    self.view_size.width -= 10;
-                    self.view_size.height += 10;
-                    self.engine.resize(self.view_size);
-                    self.engine
-                        .request_render(self.index_as_view_id(index), self.view_size);
-                }
                 self.current_view_index = Some(index as usize);
+                self.engine
+                    .request_render(self.index_as_view_id(index), self.view_size);
             }
             Action::CloseCurrentView => {
                 self.engine.remove_view(self.get_current_view_id());
@@ -248,7 +230,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                         self.view_ids.push(id);
                         self.engine.goto(id, PageType::Url(url.clone()));
 
-                        #[cfg(feature = "litehtml")]
+                        #[cfg(any(feature = "litehtml", feature = "blitz"))]
                         if let Some(mapper) = &self.action_mapper {
                             let mapper = mapper.clone();
                             let url_clone = url.clone();
@@ -260,7 +242,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                             eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
                         }
 
-                        #[cfg(not(feature = "litehtml"))]
+                        #[cfg(not(any(feature = "litehtml", feature = "blitz")))]
                         eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
                     } else {
                         let id = self
@@ -291,7 +273,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 let url_str = url.to_string();
                 self.engine.goto(view_id, PageType::Url(url_str.clone()));
 
-                #[cfg(feature = "litehtml")]
+                #[cfg(any(feature = "litehtml", feature = "blitz"))]
                 if !self.engine.handles_urls() {
                     if let Some(mapper) = &self.action_mapper {
                         let mapper = mapper.clone();
@@ -305,7 +287,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     }
                 }
 
-                #[cfg(not(feature = "litehtml"))]
+                #[cfg(not(any(feature = "litehtml", feature = "blitz")))]
                 if !self.engine.handles_urls() {
                     eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
                 }
@@ -376,7 +358,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 }
 
                 // Discover images that need fetching after layout
-                #[cfg(feature = "litehtml")]
+                #[cfg(any(feature = "litehtml", feature = "blitz"))]
                 if let Some(mapper) = &self.action_mapper {
                     let pending = self.engine.take_pending_images();
                     for (view_id, src, baseurl, redraw_on_ready) in pending {

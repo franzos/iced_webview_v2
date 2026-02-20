@@ -41,6 +41,9 @@ pub enum Action {
         String,
         Result<(String, HashMap<String, String>), String>,
     ),
+    /// Internal: carries the result of an image fetch.
+    /// The bool is `redraw_on_ready`, the u64 is the navigation epoch.
+    ImageFetchComplete(ViewId, String, Result<Vec<u8>, String>, bool, u64),
 }
 
 /// The Advanced WebView widget that creates and shows webview(s)
@@ -50,6 +53,7 @@ where
 {
     engine: Engine,
     view_size: Size<u32>,
+    scale_factor: f32,
     on_close_view: Option<Box<dyn Fn(ViewId) -> Message>>,
     on_create_view: Option<Box<dyn Fn(ViewId) -> Message>>,
     on_url_change: Option<Box<dyn Fn(ViewId, String) -> Message>>,
@@ -58,6 +62,8 @@ where
     titles: Vec<(ViewId, String)>,
     on_copy: Option<Box<dyn Fn(String) -> Message>>,
     action_mapper: Option<Arc<dyn Fn(Action) -> Message + Send + Sync>>,
+    inflight_images: usize,
+    nav_epochs: HashMap<ViewId, u64>,
 }
 
 impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
@@ -67,6 +73,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
         WebView {
             engine: Engine::default(),
             view_size: Size::new(1920, 1080),
+            scale_factor: 1.0,
             on_close_view: None,
             on_create_view: None,
             on_url_change: None,
@@ -75,6 +82,8 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
             titles: Vec::new(),
             on_copy: None,
             action_mapper: None,
+            inflight_images: 0,
+            nav_epochs: HashMap::new(),
         }
     }
 }
@@ -83,6 +92,12 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     /// Create new Advanced Webview widget
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the display scale factor for HiDPI rendering.
+    pub fn set_scale_factor(&mut self, scale: f32) {
+        self.scale_factor = scale;
+        self.engine.set_scale_factor(scale);
     }
 
     /// Subscribe to create view events
@@ -169,7 +184,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                         let id = self.engine.new_view(self.view_size, None);
                         self.engine.goto(id, PageType::Url(url.clone()));
 
-                        #[cfg(feature = "litehtml")]
+                        #[cfg(any(feature = "litehtml", feature = "blitz"))]
                         if let Some(mapper) = &self.action_mapper {
                             let mapper = mapper.clone();
                             let url_clone = url.clone();
@@ -181,7 +196,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                             eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
                         }
 
-                        #[cfg(not(feature = "litehtml"))]
+                        #[cfg(not(any(feature = "litehtml", feature = "blitz")))]
                         eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
 
                         id
@@ -209,10 +224,13 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 self.engine.request_render(id, self.view_size);
             }
             Action::GoToUrl(id, url) => {
+                self.inflight_images = 0;
+                let epoch = self.nav_epochs.entry(id).or_insert(0);
+                *epoch = epoch.wrapping_add(1);
                 let url_str = url.to_string();
                 self.engine.goto(id, PageType::Url(url_str.clone()));
 
-                #[cfg(feature = "litehtml")]
+                #[cfg(any(feature = "litehtml", feature = "blitz"))]
                 if !self.engine.handles_urls() {
                     if let Some(mapper) = &self.action_mapper {
                         let mapper = mapper.clone();
@@ -226,7 +244,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     }
                 }
 
-                #[cfg(not(feature = "litehtml"))]
+                #[cfg(not(any(feature = "litehtml", feature = "blitz")))]
                 if !self.engine.handles_urls() {
                     eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
                 }
@@ -243,18 +261,146 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             }
             Action::SendMouseEvent(id, event, point) => {
                 self.engine.handle_mouse_event(id, point, event);
-                // Don't request_render here — the periodic Update/UpdateAll
-                // tick handles it. Re-rendering inline on every mouse event
-                // (especially scroll) creates a new image Handle each time,
-                // causing GPU texture churn and visible gray flashes.
+
+                if let Some(href) = self.engine.take_anchor_click(id) {
+                    let current = self.engine.get_url(id);
+                    let base = Url::parse(&current).ok();
+                    match Url::parse(&href).or_else(|_| {
+                        base.as_ref()
+                            .ok_or(url::ParseError::RelativeUrlWithoutBase)
+                            .and_then(|b| b.join(&href))
+                    }) {
+                        Ok(resolved) => {
+                            let scheme = resolved.scheme();
+                            if scheme == "http" || scheme == "https" {
+                                let is_same_page = base.as_ref().is_some_and(|cur| {
+                                    resolved.scheme() == cur.scheme()
+                                        && resolved.host() == cur.host()
+                                        && resolved.port() == cur.port()
+                                        && resolved.path() == cur.path()
+                                        && resolved.query() == cur.query()
+                                });
+                                if is_same_page {
+                                    if let Some(fragment) = resolved.fragment() {
+                                        self.engine.scroll_to_fragment(id, fragment);
+                                    }
+                                } else {
+                                    tasks.push(self.update(Action::GoToUrl(id, resolved)));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("iced_webview: failed to resolve anchor URL '{href}': {e}");
+                        }
+                    }
+                }
+
+                return Task::batch(tasks);
             }
             Action::Update(id) => {
                 self.engine.update();
                 self.engine.request_render(id, self.view_size);
+
+                if self.inflight_images == 0 {
+                    self.engine.flush_staged_images(id, self.view_size);
+                }
+
+                #[cfg(any(feature = "litehtml", feature = "blitz"))]
+                if let Some(mapper) = &self.action_mapper {
+                    let pending = self.engine.take_pending_images();
+                    for (view_id, src, baseurl, redraw_on_ready) in pending {
+                        let page_url = self.engine.get_url(view_id);
+                        let resolved = Url::parse(&src)
+                            .or_else(|_| {
+                                if !baseurl.is_empty() {
+                                    Url::parse(&baseurl).and_then(|b| b.join(&src))
+                                } else {
+                                    Err(url::ParseError::RelativeUrlWithoutBase)
+                                }
+                            })
+                            .or_else(|_| Url::parse(&page_url).and_then(|base| base.join(&src)));
+                        let resolved = match resolved {
+                            Ok(u) => u,
+                            Err(_) => continue,
+                        };
+                        let scheme = resolved.scheme();
+                        if scheme != "http" && scheme != "https" {
+                            continue;
+                        }
+                        self.inflight_images += 1;
+                        let mapper = mapper.clone();
+                        let raw_src = src.clone();
+                        let epoch = *self.nav_epochs.get(&view_id).unwrap_or(&0);
+                        tasks.push(Task::perform(
+                            crate::fetch::fetch_image(resolved.to_string()),
+                            move |result| {
+                                mapper(Action::ImageFetchComplete(
+                                    view_id,
+                                    raw_src,
+                                    result,
+                                    redraw_on_ready,
+                                    epoch,
+                                ))
+                            },
+                        ));
+                    }
+                }
+
+                return Task::batch(tasks);
             }
             Action::UpdateAll => {
                 self.engine.update();
+
+                if self.inflight_images == 0 {
+                    for id in self.engine.view_ids() {
+                        self.engine.flush_staged_images(id, self.view_size);
+                    }
+                }
+
                 self.engine.render(self.view_size);
+
+                #[cfg(any(feature = "litehtml", feature = "blitz"))]
+                if let Some(mapper) = &self.action_mapper {
+                    let pending = self.engine.take_pending_images();
+                    for (view_id, src, baseurl, redraw_on_ready) in pending {
+                        let page_url = self.engine.get_url(view_id);
+                        let resolved = Url::parse(&src)
+                            .or_else(|_| {
+                                if !baseurl.is_empty() {
+                                    Url::parse(&baseurl).and_then(|b| b.join(&src))
+                                } else {
+                                    Err(url::ParseError::RelativeUrlWithoutBase)
+                                }
+                            })
+                            .or_else(|_| Url::parse(&page_url).and_then(|base| base.join(&src)));
+                        let resolved = match resolved {
+                            Ok(u) => u,
+                            Err(_) => continue,
+                        };
+                        let scheme = resolved.scheme();
+                        if scheme != "http" && scheme != "https" {
+                            continue;
+                        }
+                        self.inflight_images += 1;
+                        let mapper = mapper.clone();
+                        let raw_src = src.clone();
+                        let epoch = *self.nav_epochs.get(&view_id).unwrap_or(&0);
+                        tasks.push(Task::perform(
+                            crate::fetch::fetch_image(resolved.to_string()),
+                            move |result| {
+                                mapper(Action::ImageFetchComplete(
+                                    view_id,
+                                    raw_src,
+                                    result,
+                                    redraw_on_ready,
+                                    epoch,
+                                ))
+                            },
+                        ));
+                    }
+                }
+
+                return Task::batch(tasks);
             }
             Action::Resize(size) => {
                 if self.view_size != size {
@@ -293,6 +439,29 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     }
                 }
                 self.engine.request_render(view_id, self.view_size);
+            }
+            Action::ImageFetchComplete(view_id, src, result, redraw_on_ready, epoch) => {
+                self.inflight_images = self.inflight_images.saturating_sub(1);
+                let current_epoch = *self.nav_epochs.get(&view_id).unwrap_or(&0);
+                if epoch != current_epoch {
+                    return Task::batch(tasks);
+                }
+                if self.engine.has_view(view_id) {
+                    match &result {
+                        Ok(bytes) => {
+                            self.engine.load_image_from_bytes(
+                                view_id,
+                                &src,
+                                bytes,
+                                redraw_on_ready,
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("iced_webview: failed to fetch image '{}': {}", src, e);
+                        }
+                    }
+                }
+                return Task::batch(tasks);
             }
         };
 
@@ -458,6 +627,8 @@ where
             Event::Mouse(event) => {
                 if let Some(point) = cursor.position_in(layout.bounds()) {
                     shell.publish(Action::SendMouseEvent(self.id, *event, point));
+                } else if matches!(event, mouse::Event::CursorLeft) {
+                    shell.publish(Action::SendMouseEvent(self.id, *event, Point::ORIGIN));
                 }
             }
             _ => (),

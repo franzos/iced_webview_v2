@@ -6,9 +6,9 @@ use iced::mouse::{self, Interaction};
 use iced::Point;
 use iced::Size;
 
-/// A Ultralight implementation of Engine
-#[cfg(feature = "ultralight")]
-pub mod ultralight;
+/// A Blitz implementation of Engine (Stylo + Taffy + Vello)
+#[cfg(feature = "blitz")]
+pub mod blitz;
 
 /// A litehtml implementation of Engine for HTML rendering
 #[cfg(feature = "litehtml")]
@@ -41,7 +41,7 @@ pub type ViewId = usize;
 pub trait Engine {
     /// Used to do work in the actual browser engine
     fn update(&mut self);
-    /// Has Ultralight perform a new render
+    /// Request a new render pass from the engine
     fn render(&mut self, size: Size<u32>);
     /// Request that the browser engine rerender a specific view that may have been updated
     fn request_render(&mut self, id: ViewId, size: Size<u32>);
@@ -73,7 +73,7 @@ pub trait Engine {
     fn handle_keyboard_event(&mut self, id: ViewId, event: keyboard::Event);
     /// lets the engine handle mouse events
     fn handle_mouse_event(&mut self, id: ViewId, point: Point, event: mouse::Event);
-    /// Handles Scrolles on view
+    /// Handles scrolling on view
     fn scroll(&mut self, id: ViewId, delta: mouse::ScrollDelta);
 
     /// Go to a specific page type
@@ -91,7 +91,7 @@ pub trait Engine {
     fn get_title(&self, id: ViewId) -> String;
     /// Gets current cursor status from view
     fn get_cursor(&self, id: ViewId) -> Interaction;
-    /// Gets cpu renderered webview
+    /// Gets CPU-rendered webview
     fn get_view(&self, id: ViewId) -> &ImageInfo;
 
     /// Current vertical scroll offset (logical pixels).
@@ -156,4 +156,9 @@ pub trait Engine {
     /// Called when all in-flight image fetches have completed so the
     /// full batch is processed in a single redraw.
     fn flush_staged_images(&mut self, _id: ViewId, _size: Size<u32>) {}
+
+    /// Return all active view IDs.
+    fn view_ids(&self) -> Vec<ViewId> {
+        Vec::new()
+    }
 }

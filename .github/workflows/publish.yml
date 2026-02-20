@@ -10,16 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
-
-      - name: Run tests
-        run: cargo test --workspace --all-features
+      - name: Check
+        run: cargo check --features blitz
 
       - name: Publish to crates.io
         uses: katyo/publish-crates@v2

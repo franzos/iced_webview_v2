@@ -6,12 +6,12 @@ use iced::{
 use iced_webview::{Action, PageType, WebView};
 use std::time::Duration;
 
-#[cfg(feature = "ultralight")]
-type Engine = iced_webview::Ultralight;
-#[cfg(all(feature = "litehtml", not(feature = "ultralight")))]
+#[cfg(feature = "blitz")]
+type Engine = iced_webview::Blitz;
+#[cfg(all(feature = "litehtml", not(feature = "blitz")))]
 type Engine = iced_webview::Litehtml;
 
-static URL: &'static str = "https://docs.rs/iced/latest/iced/index.html";
+static URL: &str = "https://docs.rs/iced/latest/iced/index.html";
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)

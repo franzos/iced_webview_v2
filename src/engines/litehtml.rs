@@ -609,6 +609,10 @@ impl Engine for Litehtml {
         self.views.iter().any(|v| v.id == id)
     }
 
+    fn view_ids(&self) -> Vec<ViewId> {
+        self.views.iter().map(|v| v.id).collect()
+    }
+
     fn focus(&mut self) {
         // No-op: litehtml has no focus model.
     }

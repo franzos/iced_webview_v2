@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.9] - 2026-02-20
+
+### Added
+- Blitz engine — Rust-native HTML/CSS renderer (Stylo + Taffy + Vello) with modern CSS support (flexbox, grid)
+
+### Changed
+- Default engine switched from Ultralight to Blitz
+- Removed Ultralight engine and all related dependencies, build scripts, and resource handling
+
 ## [0.0.8] - 2026-02-20
 
 ### Added
@@ -15,16 +24,16 @@
 ## [0.0.7] - 2026-02-19
 
 ### Added
-- Initial litehtml engine support as lightweight alternative to Ultralight
-
-### Changed
-- Migrated to iced 0.14
+- litehtml engine with HTTP fetching, image loading, link navigation
+- Example and docs for running with litehtml
 
 ## [0.0.6] - 2026-02-19
 
 ### Added
-- litehtml engine with HTTP fetching, image loading, link navigation
-- Example and docs for running with litehtml
+- Initial litehtml engine support as lightweight alternative to Ultralight
+
+### Changed
+- Migrated to iced 0.14
 
 ## [0.0.5] - 2025-09-27
 

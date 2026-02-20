@@ -63,7 +63,7 @@ pub(crate) async fn fetch_html(
         &links
     };
     for css_url in capped {
-        fetch_css_recursive(client, &css_url, &mut css_cache, 0).await;
+        fetch_css_recursive(client, css_url, &mut css_cache, 0).await;
     }
 
     Ok((html, css_cache))
@@ -103,7 +103,7 @@ async fn fetch_css(client: &reqwest::Client, url: &Url) -> Option<String> {
     let resp = client.get(url.clone()).send().await.ok()?;
     if resp
         .content_length()
-        .map_or(false, |len| len > MAX_CSS_SIZE)
+        .is_some_and(|len| len > MAX_CSS_SIZE)
     {
         return None;
     }
@@ -129,9 +129,8 @@ fn extract_css_imports(css: &str, base: &Url) -> Vec<Url> {
         let trimmed = remaining.trim_start();
         let after_ws = start + (remaining.len() - trimmed.len());
 
-        let href = if trimmed.starts_with("url(") {
+        let href = if let Some(inner) = trimmed.strip_prefix("url(") {
             // @import url("...") or @import url(...)
-            let inner = &trimmed[4..];
             extract_url_value(inner)
         } else if trimmed.starts_with('"') || trimmed.starts_with('\'') {
             // @import "..." or @import '...'
