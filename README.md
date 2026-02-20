@@ -1,6 +1,6 @@
 # Iced_webview 
 
-[![Rust](https://github.com/franzos/iced_webview/actions/workflows/rust.yml/badge.svg)](https://github.com/franzos/iced_webview/actions/workflows/rust.yml) 
+[![Rust](https://github.com/franzos/iced_webview_v2/actions/workflows/rust.yml/badge.svg)](https://github.com/franzos/iced_webview_v2/actions/workflows/rust.yml) 
 [![crates.io](https://img.shields.io/crates/v/iced_webview_v2.svg)](https://crates.io/crates/iced_webview_v2)
 
 A library to embed Web views in iced applications

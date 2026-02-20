@@ -35,7 +35,7 @@ iced = { version = "0.14", features = ["advanced", "image", "tokio", "lazy"] }
 rand = "0.8.5"
 smol_str = "0.2.2"
 ul-next = { version = "0.4", optional = true }
-litehtml = { version = "0.2.2", features = ["pixbuf", "html"], optional = true }
+litehtml = { version = "0.2.3", features = ["pixbuf", "html"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 url = "2.5.2"
 html = "0.6.3"

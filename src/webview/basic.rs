@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use iced::advanced::image as core_image;
 use iced::advanced::{
     self, layout,
     renderer::{self},
     widget::Tree,
     Clipboard, Layout, Shell, Widget,
 };
-use iced::advanced::image as core_image;
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::{Element, Point, Size, Task};
@@ -40,7 +40,12 @@ pub enum Action {
     /// Copy the current text selection to clipboard
     CopySelection,
     /// Internal: carries the result of a URL fetch for engines without native URL support.
-    FetchComplete(ViewId, String, Result<String, String>),
+    /// On success returns `(html, css_cache)`.
+    FetchComplete(
+        ViewId,
+        String,
+        Result<(String, HashMap<String, String>), String>,
+    ),
     /// Internal: carries the result of an image fetch.
     /// The bool is `redraw_on_ready` — when true, the image doesn't affect
     /// layout so `doc.render()` can be skipped (redraw only).
@@ -169,10 +174,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     /// Provide a mapper from Action to Message so the webview can spawn async
     /// tasks (e.g. URL fetches) that route back through the update loop.
     /// Required for URL navigation on engines that don't handle URLs natively.
-    pub fn on_action(
-        mut self,
-        mapper: impl Fn(Action) -> Message + Send + Sync + 'static,
-    ) -> Self {
+    pub fn on_action(mut self, mapper: impl Fn(Action) -> Message + Send + Sync + 'static) -> Self {
         self.action_mapper = Some(Arc::new(mapper));
         self
     }
@@ -252,9 +254,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                             let url_clone = url.clone();
                             tasks.push(Task::perform(
                                 crate::fetch::fetch_html(url),
-                                move |result| {
-                                    mapper(Action::FetchComplete(id, url_clone, result))
-                                },
+                                move |result| mapper(Action::FetchComplete(id, url_clone, result)),
                             ));
                         } else {
                             eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
@@ -289,8 +289,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 let epoch = self.nav_epochs.entry(view_id).or_insert(0);
                 *epoch = epoch.wrapping_add(1);
                 let url_str = url.to_string();
-                self.engine
-                    .goto(view_id, PageType::Url(url_str.clone()));
+                self.engine.goto(view_id, PageType::Url(url_str.clone()));
 
                 #[cfg(feature = "litehtml")]
                 if !self.engine.handles_urls() {
@@ -299,9 +298,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                         let fetch_url = url_str.clone();
                         tasks.push(Task::perform(
                             crate::fetch::fetch_html(fetch_url),
-                            move |result| {
-                                mapper(Action::FetchComplete(view_id, url_str, result))
-                            },
+                            move |result| mapper(Action::FetchComplete(view_id, url_str, result)),
                         ));
                     } else {
                         eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
@@ -322,8 +319,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             }
             Action::SendMouseEvent(event, point) => {
                 let view_id = self.get_current_view_id();
-                self.engine
-                    .handle_mouse_event(view_id, point, event);
+                self.engine.handle_mouse_event(view_id, point, event);
 
                 // Check if the click triggered an anchor navigation
                 if let Some(href) = self.engine.take_anchor_click(view_id) {
@@ -338,7 +334,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                             let scheme = resolved.scheme();
                             if scheme == "http" || scheme == "https" {
                                 // Skip re-fetch for same-page fragment navigation
-                                let is_same_page = base.as_ref().map_or(false, |cur| {
+                                let is_same_page = base.as_ref().is_some_and(|cur| {
                                     resolved.scheme() == cur.scheme()
                                         && resolved.host() == cur.host()
                                         && resolved.port() == cur.port()
@@ -383,13 +379,19 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 #[cfg(feature = "litehtml")]
                 if let Some(mapper) = &self.action_mapper {
                     let pending = self.engine.take_pending_images();
-                    for (view_id, src, redraw_on_ready) in pending {
+                    for (view_id, src, baseurl, redraw_on_ready) in pending {
                         let page_url = self.engine.get_url(view_id);
+                        // Resolve against the baseurl context (e.g. stylesheet URL),
+                        // falling back to the page URL.
                         let resolved = Url::parse(&src)
                             .or_else(|_| {
-                                Url::parse(&page_url)
-                                    .and_then(|base| base.join(&src))
-                            });
+                                if !baseurl.is_empty() {
+                                    Url::parse(&baseurl).and_then(|b| b.join(&src))
+                                } else {
+                                    Err(url::ParseError::RelativeUrlWithoutBase)
+                                }
+                            })
+                            .or_else(|_| Url::parse(&page_url).and_then(|base| base.join(&src)));
                         let resolved = match resolved {
                             Ok(u) => u,
                             Err(_) => continue,
@@ -405,7 +407,13 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                         tasks.push(Task::perform(
                             crate::fetch::fetch_image(resolved.to_string()),
                             move |result| {
-                                mapper(Action::ImageFetchComplete(view_id, raw_src, result, redraw_on_ready, epoch))
+                                mapper(Action::ImageFetchComplete(
+                                    view_id,
+                                    raw_src,
+                                    result,
+                                    redraw_on_ready,
+                                    epoch,
+                                ))
                             },
                         ));
                     }
@@ -439,7 +447,8 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     return Task::batch(tasks);
                 }
                 match result {
-                    Ok(html) => {
+                    Ok((html, css_cache)) => {
+                        self.engine.set_css_cache(view_id, css_cache);
                         self.engine.goto(view_id, PageType::Html(html));
                     }
                     Err(e) => {
@@ -462,7 +471,12 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 if self.engine.has_view(view_id) {
                     match &result {
                         Ok(bytes) => {
-                            self.engine.load_image_from_bytes(view_id, &src, bytes, redraw_on_ready);
+                            self.engine.load_image_from_bytes(
+                                view_id,
+                                &src,
+                                bytes,
+                                redraw_on_ready,
+                            );
                         }
                         Err(e) => {
                             eprintln!("iced_webview: failed to fetch image '{}': {}", src, e);
@@ -532,7 +546,8 @@ impl<'a> WebViewWidget<'a> {
 
 impl<'a, Renderer, Theme> Widget<Action, Theme, Renderer> for WebViewWidget<'a>
 where
-    Renderer: iced::advanced::Renderer + iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
+    Renderer: iced::advanced::Renderer
+        + iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
 {
     fn size(&self) -> Size<Length> {
         Size {
@@ -631,20 +646,23 @@ where
 
         match event {
             Event::Keyboard(event) => {
-                if let keyboard::Event::KeyPressed { key, modifiers, .. } = event {
-                    if let keyboard::Key::Character(c) = key {
-                        if modifiers.command() && c.as_str() == "c" {
-                            shell.publish(Action::CopySelection);
-                        }
+                if let keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Character(c),
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if modifiers.command() && c.as_str() == "c" {
+                        shell.publish(Action::CopySelection);
                     }
                 }
                 shell.publish(Action::SendKeyboardEvent(event.clone()));
             }
             Event::Mouse(event) => {
                 if let Some(point) = cursor.position_in(layout.bounds()) {
-                    shell.publish(Action::SendMouseEvent(event.clone(), point));
+                    shell.publish(Action::SendMouseEvent(*event, point));
                 } else if matches!(event, mouse::Event::CursorLeft) {
-                    shell.publish(Action::SendMouseEvent(event.clone(), Point::ORIGIN));
+                    shell.publish(Action::SendMouseEvent(*event, Point::ORIGIN));
                 }
             }
             _ => (),

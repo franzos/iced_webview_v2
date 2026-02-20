@@ -1,20 +1,192 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::{Point, Size};
 use rand::Rng;
+use url::Url;
 
 use super::{Engine, PageType, PixelFormat, ViewId};
 use crate::ImageInfo;
 
 use litehtml::pixbuf::PixbufContainer;
 use litehtml::selection::Selection;
-use litehtml::{css_escape_ident, Document, Position};
+use litehtml::{
+    css_escape_ident, BackgroundLayer, BorderRadiuses, Borders, Color, ConicGradient, Document,
+    DocumentContainer, FontDescription, FontMetrics, LinearGradient, ListMarker, MediaFeatures,
+    Position, RadialGradient, TextTransform,
+};
+
+/// Wrapper around `PixbufContainer` that handles CSS import resolution
+/// and image baseurl tracking, mirroring litehtml-rs's `BrowseContainer`.
+struct WebviewContainer {
+    inner: PixbufContainer,
+    base_url: String,
+    css_cache: RefCell<HashMap<String, String>>,
+    /// Maps raw image src → baseurl passed by litehtml, so image fetches
+    /// can resolve relative URLs against the correct context (stylesheet
+    /// URL, not the page URL).
+    image_baseurls: RefCell<HashMap<String, String>>,
+}
+
+impl WebviewContainer {
+    fn new(width: u32, height: u32, scale: f32) -> Self {
+        Self {
+            inner: PixbufContainer::new_with_scale(width, height, scale),
+            base_url: String::new(),
+            css_cache: RefCell::new(HashMap::new()),
+            image_baseurls: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn inner(&self) -> &PixbufContainer {
+        &self.inner
+    }
+
+    fn inner_mut(&mut self) -> &mut PixbufContainer {
+        &mut self.inner
+    }
+
+    fn set_css_cache(&self, cache: HashMap<String, String>) {
+        *self.css_cache.borrow_mut() = cache;
+    }
+
+    /// Resolve a URL against a given base, falling back to self.base_url.
+    fn resolve_against(&self, href: &str, baseurl: &str) -> Option<Url> {
+        // Already absolute
+        if let Ok(u) = Url::parse(href) {
+            return Some(u);
+        }
+        // Resolve against the provided base context (e.g. stylesheet URL)
+        if !baseurl.is_empty() {
+            if let Ok(base) = Url::parse(baseurl) {
+                if let Ok(u) = base.join(href) {
+                    return Some(u);
+                }
+            }
+        }
+        // Fall back to page base URL
+        if !self.base_url.is_empty() {
+            if let Ok(base) = Url::parse(&self.base_url) {
+                return base.join(href).ok();
+            }
+        }
+        None
+    }
+}
+
+// Delegate everything to inner, override import_css, set_base_url, load_image
+impl DocumentContainer for WebviewContainer {
+    fn create_font(&mut self, descr: &FontDescription) -> (usize, FontMetrics) {
+        self.inner.create_font(descr)
+    }
+    fn delete_font(&mut self, font: usize) {
+        self.inner.delete_font(font);
+    }
+    fn text_width(&self, text: &str, font: usize) -> f32 {
+        self.inner.text_width(text, font)
+    }
+    fn draw_text(&mut self, hdc: usize, text: &str, font: usize, color: Color, pos: Position) {
+        self.inner.draw_text(hdc, text, font, color, pos);
+    }
+    fn draw_list_marker(&mut self, hdc: usize, marker: &ListMarker) {
+        self.inner.draw_list_marker(hdc, marker);
+    }
+    fn load_image(&mut self, src: &str, baseurl: &str, redraw_on_ready: bool) {
+        // Store the baseurl context so image fetches can resolve correctly
+        if !baseurl.is_empty() {
+            self.image_baseurls
+                .borrow_mut()
+                .insert(src.to_string(), baseurl.to_string());
+        }
+        self.inner.load_image(src, baseurl, redraw_on_ready);
+    }
+    fn get_image_size(&self, src: &str, baseurl: &str) -> litehtml::Size {
+        self.inner.get_image_size(src, baseurl)
+    }
+    fn draw_image(&mut self, hdc: usize, layer: &BackgroundLayer, url: &str, base_url: &str) {
+        self.inner.draw_image(hdc, layer, url, base_url);
+    }
+    fn draw_solid_fill(&mut self, hdc: usize, layer: &BackgroundLayer, color: Color) {
+        self.inner.draw_solid_fill(hdc, layer, color);
+    }
+    fn draw_linear_gradient(
+        &mut self,
+        hdc: usize,
+        layer: &BackgroundLayer,
+        gradient: &LinearGradient,
+    ) {
+        self.inner.draw_linear_gradient(hdc, layer, gradient);
+    }
+    fn draw_radial_gradient(
+        &mut self,
+        hdc: usize,
+        layer: &BackgroundLayer,
+        gradient: &RadialGradient,
+    ) {
+        self.inner.draw_radial_gradient(hdc, layer, gradient);
+    }
+    fn draw_conic_gradient(
+        &mut self,
+        hdc: usize,
+        layer: &BackgroundLayer,
+        gradient: &ConicGradient,
+    ) {
+        self.inner.draw_conic_gradient(hdc, layer, gradient);
+    }
+    fn draw_borders(&mut self, hdc: usize, borders: &Borders, draw_pos: Position, root: bool) {
+        self.inner.draw_borders(hdc, borders, draw_pos, root);
+    }
+    fn set_caption(&mut self, caption: &str) {
+        self.inner.set_caption(caption);
+    }
+    fn set_base_url(&mut self, base_url: &str) {
+        // Update our stored base URL for resolve_against fallback
+        self.base_url = base_url.to_string();
+        self.inner.set_base_url(base_url);
+    }
+    fn on_anchor_click(&mut self, url: &str) {
+        self.inner.on_anchor_click(url);
+    }
+    fn set_cursor(&mut self, cursor: &str) {
+        self.inner.set_cursor(cursor);
+    }
+    fn transform_text(&self, text: &str, tt: TextTransform) -> String {
+        self.inner.transform_text(text, tt)
+    }
+    fn import_css(&self, url: &str, baseurl: &str) -> (String, Option<String>) {
+        // Resolve against the baseurl parameter (stylesheet context)
+        let resolved = match self.resolve_against(url, baseurl) {
+            Some(u) => u,
+            None => return (String::new(), None),
+        };
+        let key = resolved.to_string();
+        if let Some(cached) = self.css_cache.borrow().get(&key) {
+            return (cached.clone(), Some(key));
+        }
+        // Not in cache — return empty (the CSS wasn't pre-fetched)
+        (String::new(), None)
+    }
+    fn set_clip(&mut self, pos: Position, radius: BorderRadiuses) {
+        self.inner.set_clip(pos, radius);
+    }
+    fn del_clip(&mut self) {
+        self.inner.del_clip();
+    }
+    fn get_viewport(&self) -> Position {
+        self.inner.get_viewport()
+    }
+    fn get_media_features(&self) -> MediaFeatures {
+        self.inner.get_media_features()
+    }
+}
 
 /// Persistent document and selection state for a view.
 ///
 /// # Safety
 ///
-/// The `doc` field borrows from the `Box<PixbufContainer>` in the parent
+/// The `doc` field borrows from the `Box<WebviewContainer>` in the parent
 /// `LitehtmlView`. The container is heap-allocated for address stability.
 /// `doc_state` is always dropped before the container is modified or dropped
 /// (field drop order: `doc_state` is declared before `container`).
@@ -28,7 +200,7 @@ struct LitehtmlView {
     id: ViewId,
     // IMPORTANT: doc_state must be declared before container so it drops first.
     doc_state: Option<DocumentState>,
-    container: Box<PixbufContainer>,
+    container: Box<WebviewContainer>,
     html: String,
     url: String,
     title: String,
@@ -95,7 +267,7 @@ fn rebuild_document(view: &mut LitehtmlView) {
     // holds a borrow of the container).
     if !view.staged_images.is_empty() {
         for (url, bytes, _) in view.staged_images.drain(..) {
-            view.container.load_image_data(&url, &bytes);
+            view.container.inner_mut().load_image_data(&url, &bytes);
         }
     }
 
@@ -108,10 +280,10 @@ fn rebuild_document(view: &mut LitehtmlView) {
 
     // Pass 1: use a tall viewport so CSS `100vh` doesn't cap content height.
     let layout_h = h.max(10_000);
-    view.container.resize(w, layout_h);
+    view.container.inner_mut().resize(w, layout_h);
 
     // Capture the text measurement closure before borrowing the container
-    let measure = view.container.text_measure_fn();
+    let measure = view.container.inner().text_measure_fn();
 
     // SAFETY: Manual lifetime extension is required here due to litehtml API constraints.
     //
@@ -122,15 +294,15 @@ fn rebuild_document(view: &mut LitehtmlView) {
     //   2. Multiple mutable borrows from the same field (Document and Selection)
     //
     // The unsafe lifetime extension to 'static is safe because:
-    //   1. container is Box<PixbufContainer> — heap-allocated with a stable address
+    //   1. container is Box<WebviewContainer> — heap-allocated with a stable address
     //   2. doc_state is declared before container in LitehtmlView → drops first
     //   3. doc_state is set to None before any container modification or drop
     //   4. The Document never outlives the container it borrows from
     //
     // This pattern has been carefully reviewed and is the standard approach for
     // self-referential structures when safe abstractions are incompatible.
-    let container_ptr = &mut *view.container as *mut PixbufContainer;
-    let container_ref: &'static mut PixbufContainer = unsafe { &mut *container_ptr };
+    let container_ptr = &mut *view.container as *mut WebviewContainer;
+    let container_ref: &'static mut WebviewContainer = unsafe { &mut *container_ptr };
 
     match Document::from_html(&view.html, container_ref, None, None) {
         Err(e) => {
@@ -150,12 +322,11 @@ fn rebuild_document(view: &mut LitehtmlView) {
                 // &mut references — undefined behavior.
                 drop(doc);
 
-                view.container.resize(w, final_h);
-                let measure2 = view.container.text_measure_fn();
+                view.container.inner_mut().resize(w, final_h);
+                let measure2 = view.container.inner().text_measure_fn();
 
-                let container_ptr2 = &mut *view.container as *mut PixbufContainer;
-                let container_ref2: &'static mut PixbufContainer =
-                    unsafe { &mut *container_ptr2 };
+                let container_ptr2 = &mut *view.container as *mut WebviewContainer;
+                let container_ref2: &'static mut WebviewContainer = unsafe { &mut *container_ptr2 };
 
                 match Document::from_html(&view.html, container_ref2, None, None) {
                     Err(e) => {
@@ -195,10 +366,7 @@ fn rebuild_document(view: &mut LitehtmlView) {
 /// a raw `container_ptr` when the container must be mutated while the
 /// Document holds a borrow (flush path); pass `None` for the normal path
 /// where no aliasing is needed.
-fn capture_frame(
-    view: &mut LitehtmlView,
-    container_ptr: Option<*mut PixbufContainer>,
-) {
+fn capture_frame(view: &mut LitehtmlView, container_ptr: Option<*mut WebviewContainer>) {
     let w = view.size.width;
     let full_h = (view.content_height.ceil() as u32).max(view.size.height);
 
@@ -206,12 +374,12 @@ fn capture_frame(
     // (Document holds a borrow), otherwise go through the safe reference.
     match container_ptr {
         Some(ptr) => unsafe {
-            (*ptr).resize(w, full_h);
-            (*ptr).set_ignore_overflow_clips(true);
+            (*ptr).inner_mut().resize(w, full_h);
+            (*ptr).inner_mut().set_ignore_overflow_clips(true);
         },
         None => {
-            view.container.resize(w, full_h);
-            view.container.set_ignore_overflow_clips(true);
+            view.container.inner_mut().resize(w, full_h);
+            view.container.inner_mut().set_ignore_overflow_clips(true);
         }
     }
 
@@ -226,13 +394,13 @@ fn capture_frame(
     }
 
     match container_ptr {
-        Some(ptr) => unsafe { (*ptr).set_ignore_overflow_clips(false) },
-        None => view.container.set_ignore_overflow_clips(false),
+        Some(ptr) => unsafe { (*ptr).inner_mut().set_ignore_overflow_clips(false) },
+        None => view.container.inner_mut().set_ignore_overflow_clips(false),
     }
 
-    let phys_w = view.container.width();
-    let phys_h = view.container.height();
-    let pixels = unpremultiply_rgba(view.container.pixels());
+    let phys_w = view.container.inner().width();
+    let phys_h = view.container.inner().height();
+    let pixels = unpremultiply_rgba(view.container.inner().pixels());
     view.last_frame = ImageInfo::new(pixels, PixelFormat::Rgba, phys_w, phys_h);
     view.needs_render = false;
 }
@@ -274,9 +442,9 @@ fn flush_images_and_redraw(view: &mut LitehtmlView) {
 
     // SAFETY: The Document borrows the container but doesn't access `images`
     // right now. We only touch the `images` HashMap via `load_image_data`.
-    let container_ptr = &mut *view.container as *mut PixbufContainer;
+    let container_ptr = &mut *view.container as *mut WebviewContainer;
     for (url, bytes, _) in view.staged_images.drain(..) {
-        unsafe { (*container_ptr).load_image_data(&url, &bytes) };
+        unsafe { (*container_ptr).inner_mut().load_image_data(&url, &bytes) };
     }
 
     if needs_render {
@@ -299,8 +467,8 @@ fn render_view(view: &mut LitehtmlView) {
     }
 
     if view.html.is_empty() {
-        let phys_w = view.container.width();
-        let phys_h = view.container.height();
+        let phys_w = view.container.inner().width();
+        let phys_h = view.container.inner().height();
         view.last_frame = ImageInfo::blank(phys_w, phys_h);
         view.needs_render = false;
         return;
@@ -412,7 +580,7 @@ impl Engine for Litehtml {
         let mut view = LitehtmlView {
             id,
             doc_state: None,
-            container: Box::new(PixbufContainer::new_with_scale(w, h, self.scale_factor)),
+            container: Box::new(WebviewContainer::new(w, h, self.scale_factor)),
             html,
             url,
             title: String::new(),
@@ -467,6 +635,7 @@ impl Engine for Litehtml {
             view.doc_state = None;
 
             view.container
+                .inner_mut()
                 .resize_with_scale(view.size.width, view.size.height, scale);
             view.needs_render = true;
         }
@@ -500,7 +669,7 @@ impl Engine for Litehtml {
                     let doc_y = point.y + view.scroll_y;
                     state.doc.on_mouse_over(point.x, doc_y, point.x, point.y);
                 }
-                view.cursor = css_cursor_to_interaction(view.container.cursor());
+                view.cursor = css_cursor_to_interaction(view.container.inner().cursor());
 
                 if let Some((ox, oy)) = view.drag_origin {
                     let dx = point.x - ox;
@@ -550,7 +719,7 @@ impl Engine for Litehtml {
                 }
                 // Discard anchor clicks produced during text selection
                 if was_dragging {
-                    view.container.take_anchor_click();
+                    view.container.inner_mut().take_anchor_click();
                 }
             }
             mouse::Event::CursorLeft => {
@@ -586,13 +755,16 @@ impl Engine for Litehtml {
                 // Clear image state from the previous page so stale fetches
                 // don't interfere and new images are discovered fresh.
                 view.staged_images.clear();
-                view.container.clear_pending_images();
+                view.container.inner_mut().clear_pending_images();
+                // Clear image baseurls from the previous page
+                view.container.image_baseurls.borrow_mut().clear();
 
                 view.html = html;
                 view.scroll_y = 0.0;
                 view.needs_render = true;
             }
             PageType::Url(url) => {
+                view.container.base_url = url.clone();
                 view.url = url;
             }
         }
@@ -655,22 +827,44 @@ impl Engine for Litehtml {
     }
 
     fn take_anchor_click(&mut self, id: ViewId) -> Option<String> {
-        self.find_view_mut(id).container.take_anchor_click()
+        self.find_view_mut(id)
+            .container
+            .inner_mut()
+            .take_anchor_click()
     }
 
-    fn take_pending_images(&mut self) -> Vec<(ViewId, String, bool)> {
+    fn take_pending_images(&mut self) -> Vec<(ViewId, String, String, bool)> {
         let mut result = Vec::new();
         for view in &mut self.views {
-            for (src, redraw_on_ready) in view.container.take_pending_images() {
-                result.push((view.id, src, redraw_on_ready));
+            for (src, redraw_on_ready) in view.container.inner_mut().take_pending_images() {
+                let baseurl = view
+                    .container
+                    .image_baseurls
+                    .borrow()
+                    .get(&src)
+                    .cloned()
+                    .unwrap_or_default();
+                result.push((view.id, src, baseurl, redraw_on_ready));
             }
         }
         result
     }
 
-    fn load_image_from_bytes(&mut self, id: ViewId, url: &str, bytes: &[u8], redraw_on_ready: bool) {
+    fn load_image_from_bytes(
+        &mut self,
+        id: ViewId,
+        url: &str,
+        bytes: &[u8],
+        redraw_on_ready: bool,
+    ) {
         let view = self.find_view_mut(id);
-        view.staged_images.push((url.to_string(), bytes.to_vec(), redraw_on_ready));
+        view.staged_images
+            .push((url.to_string(), bytes.to_vec(), redraw_on_ready));
+    }
+
+    fn set_css_cache(&mut self, id: ViewId, cache: HashMap<String, String>) {
+        let view = self.find_view_mut(id);
+        view.container.set_css_cache(cache);
     }
 
     fn scroll_to_fragment(&mut self, id: ViewId, fragment: &str) -> bool {

@@ -1,12 +1,13 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use iced::advanced::image as core_image;
 use iced::advanced::{
     self, layout,
     renderer::{self},
     widget::Tree,
     Clipboard, Layout, Shell, Widget,
 };
-use iced::advanced::image as core_image;
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::{Element, Point, Size, Task};
@@ -34,7 +35,12 @@ pub enum Action {
     /// Copy the current text selection to clipboard
     CopySelection(ViewId),
     /// Internal: carries the result of a URL fetch for engines without native URL support.
-    FetchComplete(ViewId, String, Result<String, String>),
+    /// On success returns `(html, css_cache)`.
+    FetchComplete(
+        ViewId,
+        String,
+        Result<(String, HashMap<String, String>), String>,
+    ),
 }
 
 /// The Advanced WebView widget that creates and shows webview(s)
@@ -118,10 +124,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     /// Provide a mapper from Action to Message so the webview can spawn async
     /// tasks (e.g. URL fetches) that route back through the update loop.
     /// Required for URL navigation on engines that don't handle URLs natively.
-    pub fn on_action(
-        mut self,
-        mapper: impl Fn(Action) -> Message + Send + Sync + 'static,
-    ) -> Self {
+    pub fn on_action(mut self, mapper: impl Fn(Action) -> Message + Send + Sync + 'static) -> Self {
         self.action_mapper = Some(Arc::new(mapper));
         self
     }
@@ -172,9 +175,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                             let url_clone = url.clone();
                             tasks.push(Task::perform(
                                 crate::fetch::fetch_html(url),
-                                move |result| {
-                                    mapper(Action::FetchComplete(id, url_clone, result))
-                                },
+                                move |result| mapper(Action::FetchComplete(id, url_clone, result)),
                             ));
                         } else {
                             eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
@@ -218,9 +219,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                         let fetch_url = url_str.clone();
                         tasks.push(Task::perform(
                             crate::fetch::fetch_html(fetch_url),
-                            move |result| {
-                                mapper(Action::FetchComplete(id, url_str, result))
-                            },
+                            move |result| mapper(Action::FetchComplete(id, url_str, result)),
                         ));
                     } else {
                         eprintln!("iced_webview: on_action() mapper required for URL navigation with this engine");
@@ -280,7 +279,8 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     return Task::batch(tasks);
                 }
                 match result {
-                    Ok(html) => {
+                    Ok((html, css_cache)) => {
+                        self.engine.set_css_cache(view_id, css_cache);
                         self.engine.goto(view_id, PageType::Html(html));
                     }
                     Err(e) => {
@@ -348,7 +348,8 @@ impl<'a> WebViewWidget<'a> {
 
 impl<'a, Renderer, Theme> Widget<Action, Theme, Renderer> for WebViewWidget<'a>
 where
-    Renderer: iced::advanced::Renderer + iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
+    Renderer: iced::advanced::Renderer
+        + iced::advanced::image::Renderer<Handle = iced::advanced::image::Handle>,
 {
     fn size(&self) -> Size<Length> {
         Size {
@@ -442,18 +443,21 @@ where
 
         match event {
             Event::Keyboard(event) => {
-                if let keyboard::Event::KeyPressed { key, modifiers, .. } = event {
-                    if let keyboard::Key::Character(c) = key {
-                        if modifiers.command() && c.as_str() == "c" {
-                            shell.publish(Action::CopySelection(self.id));
-                        }
+                if let keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Character(c),
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if modifiers.command() && c.as_str() == "c" {
+                        shell.publish(Action::CopySelection(self.id));
                     }
                 }
                 shell.publish(Action::SendKeyboardEvent(self.id, event.clone()));
             }
             Event::Mouse(event) => {
                 if let Some(point) = cursor.position_in(layout.bounds()) {
-                    shell.publish(Action::SendMouseEvent(self.id, event.clone(), point));
+                    shell.publish(Action::SendMouseEvent(self.id, *event, point));
                 }
             }
             _ => (),

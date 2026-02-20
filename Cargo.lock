@@ -2202,9 +2202,9 @@ checksum = "78b3ae25bc7c8c38cec158d1f2757ee79e9b3740fbc7ccf0e59e4b08d793fa89"
 
 [[package]]
 name = "litehtml"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8dc8fe229a9e76b2fac5157674c5af2337d128a933f17b3c9d13623aa62fac42"
+checksum = "7372a46feadb3ed9f6bdb617b3aa2bb27d048ea7488d45cd0f23231d38fe0b54"
 dependencies = [
  "base64",
  "cosmic-text 0.14.2",
@@ -2217,9 +2217,9 @@ dependencies = [
 
 [[package]]
 name = "litehtml-sys"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f1e5a10f49a1561fcb15f8cb897c891e3047a964639983ae7054cb63957d9b6"
+checksum = "19976587d067005eec50b8f25e99040ca18e0ac223d6a4bf44f0a6cc5189f8c1"
 dependencies = [
  "bindgen",
  "cc",

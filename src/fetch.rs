@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use url::Url;
 
@@ -9,6 +10,8 @@ const MAX_IMAGE_SIZE: u64 = 10 * 1024 * 1024;
 const MAX_CSS_SIZE: u64 = 5 * 1024 * 1024;
 /// Max number of external stylesheets to fetch.
 const MAX_STYLESHEETS: usize = 50;
+/// Max depth for @import chains to prevent infinite loops.
+const MAX_IMPORT_DEPTH: usize = 3;
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -17,17 +20,28 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .expect("failed to build HTTP client")
 });
 
-/// Fetch a URL, resolve external stylesheets and inline them, then return
-/// self-contained HTML ready for a renderer that has no networking.
-pub(crate) async fn fetch_html(page_url: String) -> Result<String, String> {
+/// Fetch a URL and return raw HTML plus a pre-fetched CSS cache.
+///
+/// The CSS cache maps resolved stylesheet URLs to their CSS text.
+/// The HTML is returned unmodified — no inlining. The engine's
+/// `import_css` callback looks up stylesheets from the cache instead.
+pub(crate) async fn fetch_html(
+    page_url: String,
+) -> Result<(String, HashMap<String, String>), String> {
     let client = &*HTTP_CLIENT;
     let base = Url::parse(&page_url).map_err(|e| e.to_string())?;
 
-    let response = client.get(&page_url).send().await.map_err(|e| e.to_string())?;
+    let response = client
+        .get(&page_url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
 
     if let Some(len) = response.content_length() {
         if len > MAX_PAGE_SIZE {
-            return Err(format!("page too large: {len} bytes exceeds {MAX_PAGE_SIZE} byte limit"));
+            return Err(format!(
+                "page too large: {len} bytes exceeds {MAX_PAGE_SIZE} byte limit"
+            ));
         }
     }
 
@@ -38,41 +52,125 @@ pub(crate) async fn fetch_html(page_url: String) -> Result<String, String> {
             body.len()
         ));
     }
-    let mut html = String::from_utf8_lossy(&body).into_owned();
+    let html = String::from_utf8_lossy(&body).into_owned();
 
-    // Find external stylesheets, process from end so byte offsets stay valid.
+    // Pre-fetch external stylesheets into a cache keyed by resolved URL.
+    let mut css_cache = HashMap::new();
     let links = extract_stylesheet_links(&html, &base);
     let capped = if links.len() > MAX_STYLESHEETS {
         &links[..MAX_STYLESHEETS]
     } else {
         &links
     };
-    for (range, css_url) in capped.iter().rev() {
-        if let Ok(resp) = client.get(css_url.clone()).send().await {
-            let too_large = resp
-                .content_length()
-                .map_or(false, |len| len > MAX_CSS_SIZE);
-            if too_large {
-                continue;
-            }
-            if let Ok(bytes) = resp.bytes().await {
-                if bytes.len() as u64 > MAX_CSS_SIZE {
-                    continue;
-                }
-                let css = String::from_utf8_lossy(&bytes);
-                // Escape '<' so fetched CSS can't break out of the <style> tag
-                let safe_css = css.replace('<', "\\3c ");
-                html.replace_range(range.clone(), &format!("<style>{safe_css}</style>"));
-            }
-        }
+    for css_url in capped {
+        fetch_css_recursive(client, &css_url, &mut css_cache, 0).await;
     }
 
-    Ok(html)
+    Ok((html, css_cache))
+}
+
+/// Fetch a single CSS file and follow @import directives up to MAX_IMPORT_DEPTH.
+async fn fetch_css_recursive(
+    client: &reqwest::Client,
+    url: &Url,
+    cache: &mut HashMap<String, String>,
+    depth: usize,
+) {
+    let key = url.to_string();
+    if cache.contains_key(&key) || depth > MAX_IMPORT_DEPTH {
+        return;
+    }
+
+    let css = match fetch_css(client, url).await {
+        Some(text) => text,
+        None => return,
+    };
+
+    // Scan for @import before inserting (we need the text)
+    let imports = extract_css_imports(&css, url);
+    cache.insert(key, css);
+
+    for import_url in imports {
+        if cache.len() >= MAX_STYLESHEETS {
+            break;
+        }
+        Box::pin(fetch_css_recursive(client, &import_url, cache, depth + 1)).await;
+    }
+}
+
+/// Fetch a single CSS URL with size limits. Returns None on failure.
+async fn fetch_css(client: &reqwest::Client, url: &Url) -> Option<String> {
+    let resp = client.get(url.clone()).send().await.ok()?;
+    if resp
+        .content_length()
+        .map_or(false, |len| len > MAX_CSS_SIZE)
+    {
+        return None;
+    }
+    let bytes = resp.bytes().await.ok()?;
+    if bytes.len() as u64 > MAX_CSS_SIZE {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Scan CSS text for `@import url(...)` or `@import "..."` directives.
+/// Returns resolved URLs.
+fn extract_css_imports(css: &str, base: &Url) -> Vec<Url> {
+    let mut results = Vec::new();
+    let lower = css.to_ascii_lowercase();
+    let mut pos = 0;
+
+    while let Some(offset) = lower[pos..].find("@import") {
+        let start = pos + offset + 7; // skip "@import"
+
+        // Skip whitespace
+        let remaining = &css[start..];
+        let trimmed = remaining.trim_start();
+        let after_ws = start + (remaining.len() - trimmed.len());
+
+        let href = if trimmed.starts_with("url(") {
+            // @import url("...") or @import url(...)
+            let inner = &trimmed[4..];
+            extract_url_value(inner)
+        } else if trimmed.starts_with('"') || trimmed.starts_with('\'') {
+            // @import "..." or @import '...'
+            let quote = trimmed.as_bytes()[0] as char;
+            let rest = &trimmed[1..];
+            rest.find(quote).map(|end| rest[..end].to_string())
+        } else {
+            None
+        };
+
+        if let Some(href) = href {
+            if let Ok(resolved) = base.join(&href) {
+                results.push(resolved);
+            }
+        }
+
+        pos = after_ws + 1;
+    }
+
+    results
+}
+
+/// Extract a URL value from inside `url(...)`.
+fn extract_url_value(s: &str) -> Option<String> {
+    let trimmed = s.trim_start();
+    if trimmed.starts_with('"') || trimmed.starts_with('\'') {
+        let quote = trimmed.as_bytes()[0] as char;
+        let rest = &trimmed[1..];
+        let end = rest.find(quote)?;
+        Some(rest[..end].to_string())
+    } else {
+        let end = trimmed.find(')')?;
+        Some(trimmed[..end].trim().to_string())
+    }
 }
 
 /// Scan HTML for `<link rel="stylesheet" href="...">` tags.
-/// Returns (byte_range, resolved_url) pairs sorted by position.
-fn extract_stylesheet_links(html: &str, base: &Url) -> Vec<(std::ops::Range<usize>, Url)> {
+/// Returns resolved URLs.
+fn extract_stylesheet_links(html: &str, base: &Url) -> Vec<Url> {
     let mut results = Vec::new();
     let lower = html.to_ascii_lowercase();
     let mut pos = 0;
@@ -96,7 +194,7 @@ fn extract_stylesheet_links(html: &str, base: &Url) -> Vec<(std::ops::Range<usiz
         };
 
         if let Ok(resolved) = base.join(&href) {
-            results.push((start..end, resolved));
+            results.push(resolved);
         }
     }
 

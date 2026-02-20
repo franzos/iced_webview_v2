@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::ImageInfo;
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
@@ -126,12 +128,16 @@ pub trait Engine {
     }
 
     /// Return image URLs discovered during layout that still need fetching.
-    /// Each entry is `(view_id, raw_src, redraw_on_ready)` — the consumer
-    /// resolves URLs and threads `redraw_on_ready` back through
-    /// `load_image_from_bytes`.
-    fn take_pending_images(&mut self) -> Vec<(ViewId, String, bool)> {
+    /// Each entry is `(view_id, raw_src, baseurl, redraw_on_ready)` — the
+    /// consumer resolves URLs against baseurl and threads `redraw_on_ready`
+    /// back through `load_image_from_bytes`.
+    fn take_pending_images(&mut self) -> Vec<(ViewId, String, String, bool)> {
         Vec::new()
     }
+
+    /// Pre-load a CSS cache into a view's container so `import_css` can
+    /// resolve stylesheets without network access during parsing.
+    fn set_css_cache(&mut self, _id: ViewId, _cache: HashMap<String, String>) {}
 
     /// Inject fetched image bytes into a view's container, keyed by the
     /// raw `src` value from the HTML. When `redraw_on_ready` is true, the
