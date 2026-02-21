@@ -4,20 +4,20 @@ use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::{Point, Size};
 use rand::Rng;
-use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::{Engine, PageType, PixelFormat, ViewId};
 use crate::ImageInfo;
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::net::Resource;
-use blitz_dom::Document;
-use blitz_dom::DocumentConfig;
+use blitz_dom::{Document, DocumentConfig};
 use blitz_html::HtmlDocument;
-use blitz_net::{MpscCallback, Provider};
+use blitz_net::Provider;
 use blitz_paint::paint_scene;
-use blitz_traits::events::{BlitzMouseButtonEvent, MouseEventButton, MouseEventButtons, UiEvent};
+use blitz_traits::events::{
+    BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, PointerCoords,
+    PointerDetails, UiEvent,
+};
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::NetProvider;
 use blitz_traits::shell::{ColorScheme, ShellProvider, Viewport};
@@ -47,8 +47,7 @@ impl ShellProvider for WebviewShell {
 struct BlitzView {
     id: ViewId,
     document: Option<HtmlDocument>,
-    resource_rx: UnboundedReceiver<(usize, Resource)>,
-    net_provider: Arc<Provider<Resource>>,
+    net_provider: Arc<dyn NetProvider>,
     nav_capture: Arc<Mutex<Option<String>>>,
     cursor_icon: Arc<Mutex<CursorIcon>>,
     url: String,
@@ -113,21 +112,16 @@ fn cursor_icon_to_interaction(icon: CursorIcon) -> Interaction {
     }
 }
 
-/// Create a new Provider + receiver pair for sub-resource fetching.
-fn new_net_provider() -> (
-    UnboundedReceiver<(usize, Resource)>,
-    Arc<Provider<Resource>>,
-) {
-    let (rx, callback) = MpscCallback::new();
-    let provider = Arc::new(Provider::new(Arc::new(callback)));
-    (rx, provider)
+/// Create a new net provider for sub-resource fetching.
+fn new_net_provider() -> Arc<dyn NetProvider> {
+    Provider::shared(None)
 }
 
 /// Parse HTML into a Blitz document with the given configuration.
 fn create_document(
     html: &str,
     base_url: &str,
-    net: &Arc<Provider<Resource>>,
+    net: &Arc<dyn NetProvider>,
     nav: &Arc<LinkCapture>,
     shell: &Arc<WebviewShell>,
     size: Size<u32>,
@@ -142,7 +136,7 @@ fn create_document(
         } else {
             Some(base_url.to_string())
         },
-        net_provider: Some(Arc::clone(net) as Arc<dyn NetProvider<Resource>>),
+        net_provider: Some(Arc::clone(net)),
         navigation_provider: Some(Arc::clone(nav) as Arc<dyn NavigationProvider>),
         shell_provider: Some(Arc::clone(shell) as Arc<dyn ShellProvider>),
         viewport: Some(Viewport::new(phys_w, phys_h, scale, ColorScheme::Light)),
@@ -190,7 +184,7 @@ fn render_view(view: &mut BlitzView) {
 
     let buffer = render_to_buffer::<VelloCpuImageRenderer, _>(
         |scene| {
-            paint_scene(scene, doc, scale, render_w, render_h);
+            paint_scene(scene, doc, scale, render_w, render_h, 0, 0);
         },
         render_w,
         render_h,
@@ -200,18 +194,17 @@ fn render_view(view: &mut BlitzView) {
     view.needs_render = false;
 }
 
-/// Drain completed resource fetches and feed them into the document.
+/// Drain completed resource fetches via the document's internal channel.
 fn drain_resources(view: &mut BlitzView) -> bool {
     let doc = match view.document.as_mut() {
         Some(d) => d,
         None => return false,
     };
-    let mut loaded = false;
-    while let Ok((_doc_id, resource)) = view.resource_rx.try_recv() {
-        doc.load_resource(resource);
-        loaded = true;
-    }
-    loaded
+    doc.handle_messages();
+    // handle_messages processes resources internally; assume there were
+    // updates if we have a document (the resolve pass will be a no-op if
+    // nothing changed).
+    true
 }
 
 impl Engine for Blitz {
@@ -254,7 +247,7 @@ impl Engine for Blitz {
 
         let nav_capture = Arc::new(Mutex::new(None));
         let cursor_icon = Arc::new(Mutex::new(CursorIcon::Default));
-        let (rx, net) = new_net_provider();
+        let net = new_net_provider();
         let nav = Arc::new(LinkCapture(Arc::clone(&nav_capture)));
         let shell = Arc::new(WebviewShell {
             cursor: Arc::clone(&cursor_icon),
@@ -283,7 +276,6 @@ impl Engine for Blitz {
         let mut view = BlitzView {
             id,
             document,
-            resource_rx: rx,
             net_provider: net,
             nav_capture,
             cursor_icon,
@@ -368,12 +360,21 @@ impl Engine for Blitz {
                 let view = self.find_view_mut(id);
                 if let Some(ref mut doc) = view.document {
                     let doc_y = point.y + view.scroll_y;
-                    doc.handle_ui_event(UiEvent::MouseDown(BlitzMouseButtonEvent {
-                        x: point.x,
-                        y: doc_y,
+                    doc.handle_ui_event(UiEvent::PointerDown(BlitzPointerEvent {
+                        id: BlitzPointerId::Mouse,
+                        is_primary: true,
+                        coords: PointerCoords {
+                            page_x: point.x,
+                            page_y: doc_y,
+                            screen_x: point.x,
+                            screen_y: doc_y,
+                            client_x: point.x,
+                            client_y: doc_y,
+                        },
                         button: MouseEventButton::Main,
                         buttons: MouseEventButtons::Primary,
                         mods: Modifiers::empty(),
+                        details: PointerDetails::default(),
                     }));
                 }
             }
@@ -395,12 +396,21 @@ impl Engine for Blitz {
                 let view = self.find_view_mut(id);
                 if let Some(ref mut doc) = view.document {
                     let doc_y = point.y + view.scroll_y;
-                    doc.handle_ui_event(UiEvent::MouseUp(BlitzMouseButtonEvent {
-                        x: point.x,
-                        y: doc_y,
+                    doc.handle_ui_event(UiEvent::PointerUp(BlitzPointerEvent {
+                        id: BlitzPointerId::Mouse,
+                        is_primary: true,
+                        coords: PointerCoords {
+                            page_x: point.x,
+                            page_y: doc_y,
+                            screen_x: point.x,
+                            screen_y: doc_y,
+                            client_x: point.x,
+                            client_y: doc_y,
+                        },
                         button: MouseEventButton::Main,
                         buttons: MouseEventButtons::None,
                         mods: Modifiers::empty(),
+                        details: PointerDetails::default(),
                     }));
                 }
             }
@@ -434,8 +444,7 @@ impl Engine for Blitz {
                 let shell = Arc::new(WebviewShell {
                     cursor: Arc::clone(&view.cursor_icon),
                 });
-                let (rx, net) = new_net_provider();
-                view.resource_rx = rx;
+                let net = new_net_provider();
                 view.net_provider = Arc::clone(&net);
 
                 view.document = Some(create_document(

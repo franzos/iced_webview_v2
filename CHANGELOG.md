@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.0] - 2026-02-20
+
+### Added
+- Servo engine — full browser (HTML5, CSS3, JS via SpiderMonkey) as a third engine option behind the `servo` feature flag
+
+### Changed
+- Blitz deps switched from crates.io to git (DioxusLabs/blitz main) — now uses stylo 0.12, same as Servo, so both features coexist
+- Updated blitz companion crates: anyrender 0.7, anyrender_vello_cpu 0.9, peniko 0.6
+- Minimum Rust version bumped to 1.90
+
 ## [0.0.9] - 2026-02-20
 
 ### Added

@@ -21,5 +21,7 @@ jobs:
       run: cargo check --features blitz --verbose
     - name: Check (litehtml)
       run: cargo check --no-default-features --features litehtml --verbose
+    - name: Check (servo)
+      run: cargo check --no-default-features --features servo --verbose
     - name: Check (docs_only)
       run: cargo check --no-default-features --features docs_only --verbose

@@ -1,7 +1,8 @@
 //! A library to embed web views in iced applications.
 //!
-//! Supports [Blitz](https://github.com/DioxusLabs/blitz) (Rust-native, modern CSS) and
-//! [litehtml](https://github.com/franzos/litehtml-rs) (lightweight, CPU-based).
+//! Supports [Blitz](https://github.com/DioxusLabs/blitz) (Rust-native, modern CSS),
+//! [litehtml](https://github.com/franzos/litehtml-rs) (lightweight, CPU-based), and
+//! [Servo](https://servo.org/) (full browser: HTML5, CSS3, JS).
 //!
 //! Has two separate widgets: Basic, and Advanced.
 //! The basic widget is simple to implement — use abstractions like `CloseCurrent` and `ChangeView`.
@@ -38,6 +39,9 @@ pub use engines::blitz::Blitz;
 
 #[cfg(feature = "litehtml")]
 pub use engines::litehtml::Litehtml;
+
+#[cfg(feature = "servo")]
+pub use engines::servo::Servo;
 
 pub(crate) mod util;
 

@@ -14,6 +14,10 @@ pub mod blitz;
 #[cfg(feature = "litehtml")]
 pub mod litehtml;
 
+/// A Servo implementation of Engine (full browser: HTML5, CSS3, JS)
+#[cfg(feature = "servo")]
+pub mod servo;
+
 /// Creation of new pages to be of a html type or a url
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum PageType {

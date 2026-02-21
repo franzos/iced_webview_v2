@@ -8,6 +8,7 @@ A library to embed Web views in iced applications
 This library supports
 - [Blitz] — Rust-native HTML/CSS renderer (Stylo + Taffy + Vello), modern CSS (flexbox, grid), no JS
 - [litehtml] — lightweight CPU-based HTML/CSS rendering, no JS or navigation (good for static content like emails)
+- [Servo] — full browser engine (HTML5, CSS3, JS via SpiderMonkey), software-rendered
 
 ## Compatibility
 
@@ -18,7 +19,9 @@ This library supports
 
 ## Requirements
 
-- Rust 1.85+ (Blitz crates use edition 2024)
+- Rust 1.90+ (Blitz crates from git use edition 2024, declared MSRV 1.90)
+- litehtml requires `clang`/`libclang` for building `litehtml-sys`
+- Servo requires `fontconfig`, `make`, `cmake`, `clang` (recent version), and `nasm` at build time
 
 #### examples:
 
@@ -29,6 +32,8 @@ A simple example to showcase an embedded webview (uses the basic webview)
 cargo run --example embedded_webview
 # or with litehtml
 cargo run --example embedded_webview --no-default-features --features litehtml
+# or with servo
+cargo run --example embedded_webview --no-default-features --features servo
 ```
 
 ##### `examples/multi_webview`
@@ -36,17 +41,25 @@ A more advanced example that uses the advanced webview module and has two simult
 ![image](https://raw.githubusercontent.com/franzos/iced_webview_v2/refs/heads/main/assets/multi_view.png)
 ```sh
 cargo run --example multi_webview
+# or with litehtml
+cargo run --example multi_webview --no-default-features --features litehtml
+# or with servo
+cargo run --example multi_webview --no-default-features --features servo
 ```
 
 ##### `examples/email`
-Renders a table-based marketing email using litehtml — demonstrates static HTML rendering without a full browser engine
+Renders a table-based marketing email — works with any engine, but designed to showcase litehtml's table layout
 ```sh
 cargo run --example email --no-default-features --features litehtml
+# or with blitz
+cargo run --example email
+# or with servo
+cargo run --example email --no-default-features --features servo
 ```
 
 ## Known Issues
 
-Neither engine is a full browser — there's no JavaScript, and rendering is CPU-based. Both are best suited for displaying static or semi-static HTML content.
+Blitz and litehtml are not full browsers — there's no JavaScript, and rendering is CPU-based. Both are best suited for displaying static or semi-static HTML content. Servo is a full browser engine with JS support but adds significant binary size.
 
 ### Blitz
 
@@ -62,33 +75,43 @@ Neither engine is a full browser — there's no JavaScript, and rendering is CPU
 - **No JavaScript or navigation history** — static rendering only.
 - **C++ dependency** — requires `clang`/`libclang` for building `litehtml-sys`.
 
+### Servo
+
+- **Git-only dependency** — `libservo` is not on crates.io, so the `servo` feature cannot be published. Build from git only.
+- **Large binary** — adds 50-150+ MB to the final binary due to SpiderMonkey and Servo's full rendering pipeline.
+- **System deps** — needs `fontconfig`, `make`, `cmake`, `clang` (recent version), and `nasm` at build time.
+- **No text selection** — not yet wired up through the embedding API.
+
 ## TODO
 
 - **Blitz incremental layout** — `blitz-dom` has a feature-gated `incremental` flag that enables selective cache clearing and damage propagation in `resolve()`. Currently experimental (incomplete FC root detection, no tests), but once stabilized it would make re-layout after hover/resource loads much cheaper by only updating affected subtrees instead of the full tree.
 - **`:hover` CSS rendering** — both engines skip the visual re-render for hover styles. With incremental layout + viewport-only rendering, it may become cheap enough to re-enable for Blitz.
 - **Async rendering** — rendering currently blocks the main thread. Moving the `paint_scene` + `render_to_buffer` call to a background thread would keep the UI responsive during re-renders.
-- **Servo integration** — a full Rust-native browser engine (HTML5, CSS3, JS) as a third engine option. Servo's embedding API (`libservo`) is stabilizing but not yet on crates.io.
+- **Servo text selection** — wire up Servo's text selection API through the engine trait.
 
 ## Engine Comparison
 
-| Feature | Blitz | litehtml |
-|---------|-------|----------|
-| **CSS flexbox / grid** | Yes (Firefox's Stylo engine) | No |
-| **CSS variables** | Yes | No |
-| **Table layout** | Yes | Yes |
-| **JavaScript** | No | No |
-| **Text selection** | No (not yet in blitz-dom) | Yes |
-| **`:hover` CSS styles** | Tracked, not rendered (CPU cost) | Tracked, not rendered |
-| **Cursor changes** | Yes | Yes |
-| **Link navigation** | Yes | Yes |
-| **Image loading** | Yes (blitz-net, automatic) | Yes (manual fetch pipeline) |
-| **CSS `@import`** | Yes (blitz-net) | Yes (recursive fetch + cache) |
-| **Scrolling** | Yes | Yes |
-| **Incremental rendering** | No (experimental flag exists) | No |
-| **Build deps** | Pure Rust | C++ (`clang`/`libclang`) |
-| **License** | MIT/Apache-2.0 + MPL-2.0 (Stylo) | BSD |
+| Feature | Blitz | litehtml | Servo |
+|---------|-------|----------|-------|
+| **CSS flexbox / grid** | Yes (Firefox's Stylo engine) | No | Yes |
+| **CSS variables** | Yes | No | Yes |
+| **Table layout** | Yes | Yes | Yes |
+| **JavaScript** | No | No | Yes (SpiderMonkey) |
+| **Text selection** | No (not yet in blitz-dom) | Yes | No (not yet wired) |
+| **`:hover` CSS styles** | Tracked, not rendered (CPU cost) | Tracked, not rendered | Yes |
+| **Cursor changes** | Yes | Yes | Yes |
+| **Link navigation** | Yes | Yes | Yes |
+| **Image loading** | Yes (blitz-net, automatic) | Yes (manual fetch pipeline) | Yes (built-in) |
+| **CSS `@import`** | Yes (blitz-net) | Yes (recursive fetch + cache) | Yes (built-in) |
+| **Scrolling** | Yes | Yes | Yes (engine-managed) |
+| **Incremental rendering** | No (experimental flag exists) | No | Yes |
+| **Navigation history** | No | No | Yes |
+| **Build deps** | Pure Rust | C++ (`clang`/`libclang`) | Pure Rust (git-only) |
+| **Binary size impact** | Moderate | Small | Large (50-150+ MB) |
+| **License** | MIT/Apache-2.0 + MPL-2.0 (Stylo) | BSD | MPL-2.0 |
 
 [Blitz]: https://github.com/DioxusLabs/blitz
 [litehtml]: https://github.com/franzos/litehtml-rs
+[Servo]: https://servo.org/
 
 Original developer: [LegitCamper/iced_webview](https://github.com/LegitCamper/iced_webview) (Sawyer Bristol and others)
