@@ -485,7 +485,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             // Engines that manage their own scrolling and produce a viewport-
             // sized frame each tick (servo): use the shader widget for direct
             // GPU texture updates, avoiding Handle cache churn.
-            #[cfg(feature = "servo")]
+            #[cfg(any(feature = "servo", feature = "cef"))]
             {
                 use crate::webview::shader_widget::WebViewShaderProgram;
                 iced::widget::Shader::new(WebViewShaderProgram::new(
@@ -496,7 +496,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 .height(Length::Fill)
                 .into()
             }
-            #[cfg(not(feature = "servo"))]
+            #[cfg(not(any(feature = "servo", feature = "cef")))]
             {
                 WebViewWidget::new(
                     self.engine.get_view(id),

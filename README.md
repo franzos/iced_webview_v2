@@ -9,6 +9,7 @@ This library supports
 - [Blitz] — Rust-native HTML/CSS renderer (Stylo + Taffy + Vello), modern CSS (flexbox, grid), no JS
 - [litehtml] — lightweight CPU-based HTML/CSS rendering, no JS or navigation (good for static content like emails)
 - [Servo] — full browser engine (HTML5, CSS3, JS via SpiderMonkey), software-rendered
+- [CEF] — Chromium Embedded Framework via cef-rs, full Chromium browser compat (HTML5, CSS3, JS)
 
 ## Compatibility
 
@@ -22,6 +23,8 @@ This library supports
 - Rust 1.90+ (Blitz crates from git use edition 2024, declared MSRV 1.90)
 - litehtml requires `clang`/`libclang` for building `litehtml-sys`
 - Servo requires `fontconfig`, `make`, `cmake`, `clang` (recent version), and `nasm` at build time
+- CEF downloads the Chromium Embedded Framework binary (~200-300 MB) at build time; requires subprocess handling (see below)
+- CEF on Guix: use `manifest-cef.scm` — `guix shell -m manifest-cef.scm` then `eval "$(./cef-link-flags.sh)" && CC=gcc cargo run --example webview --no-default-features --features cef`
 
 #### examples:
 
@@ -33,6 +36,8 @@ cargo run --release --example webview
 cargo run --example webview --no-default-features --features litehtml
 # or with servo
 cargo run --example webview --no-default-features --features servo
+# or with cef
+cargo run --example webview --no-default-features --features cef
 ```
 
 ##### `examples/embedded_webview`
@@ -44,6 +49,8 @@ cargo run --example embedded_webview
 cargo run --example embedded_webview --no-default-features --features litehtml
 # or with servo
 cargo run --example embedded_webview --no-default-features --features servo
+# or with cef
+cargo run --example embedded_webview --no-default-features --features cef
 ```
 
 ##### `examples/multi_webview`
@@ -55,6 +62,8 @@ cargo run --example multi_webview
 cargo run --example multi_webview --no-default-features --features litehtml
 # or with servo
 cargo run --example multi_webview --no-default-features --features servo
+# or with cef
+cargo run --example multi_webview --no-default-features --features cef
 ```
 
 ##### `examples/email`
@@ -65,11 +74,13 @@ cargo run --example email --no-default-features --features litehtml
 cargo run --example email
 # or with servo
 cargo run --example email --no-default-features --features servo
+# or with cef
+cargo run --example email --no-default-features --features cef
 ```
 
 ## Known Issues
 
-Blitz and litehtml are not full browsers — there's no JavaScript, and rendering is CPU-based. Both are best suited for displaying static or semi-static HTML content. Servo is a full browser engine with JS support but adds significant binary size.
+Blitz and litehtml are not full browsers — there's no JavaScript, and rendering is CPU-based. Both are best suited for displaying static or semi-static HTML content. Servo and CEF are full browser engines with JS support but add significant binary size.
 
 ### Blitz
 
@@ -96,6 +107,14 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 - **Intermittent SpiderMonkey crashes** — servo's JS engine can segfault during script execution on certain pages (`JS::GetScriptPrivate`). This is an upstream servo/SpiderMonkey issue, not specific to the embedding. Pages with heavy JS are more likely to trigger it.
 - **Rendering** — uses iced's `shader` widget with a persistent GPU texture updated in-place via `queue.write_texture()` each frame. This avoids the texture cache churn (and visible flickering) that would otherwise occur with iced's image Handle path during rapid frame updates like scrolling.
 
+### CEF
+
+- **Single-process mode** — runs all Chromium threads in one process (`--single-process`). CEF's multi-process model requires resources (`.pak`, `icudtl.dat`, GL libs) to be discoverable by subprocesses, which is fragile on non-FHS systems (Guix, Nix). Single-process avoids this. `cef_subprocess_check()` is still available for multi-process setups.
+- **Large runtime** — ships ~200-300 MB of Chromium binaries alongside your application.
+- **Not Rust-native** — C++ under the hood, Rust bindings via [cef-rs](https://github.com/tauri-apps/cef-rs).
+- **CEF binary download** — the `cef-dll-sys` build script downloads the CEF binary distribution at build time.
+- **Rendering** — uses iced's `shader` widget with a persistent GPU texture updated in-place via `queue.write_texture()` each frame, same as Servo. This avoids the texture cache churn (and visible flickering) that would otherwise occur with iced's image Handle path.
+
 ## TODO
 
 - **Blitz incremental layout** — `blitz-dom` has a feature-gated `incremental` flag that enables selective cache clearing and damage propagation in `resolve()`. Currently experimental (incomplete FC root detection, no tests), but once stabilized it would make re-layout after hover/resource loads much cheaper by only updating affected subtrees instead of the full tree.
@@ -106,30 +125,31 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 
 ## Engine Comparison
 
-| Feature | Blitz | litehtml | Servo |
-|---------|-------|----------|-------|
-| **CSS flexbox / grid** | Yes (Firefox's Stylo engine) | No | Yes |
-| **CSS variables** | Yes | No | Yes |
-| **Table layout** | Yes | Yes | Yes |
-| **JavaScript** | No | No | Yes (SpiderMonkey) |
-| **Keyboard input** | Supported in blitz-dom, not yet wired | No | Yes |
-| **Text selection** | No (not yet in blitz-dom) | Yes | No (not yet wired) |
-| **`:hover` CSS styles** | Tracked, not rendered (CPU cost) | Tracked, not rendered | Yes |
-| **Cursor changes** | Yes | Yes | Yes |
-| **Link navigation** | Yes | Yes | Yes |
-| **Image loading** | Yes (blitz-net, automatic) | Yes (manual fetch pipeline) | Yes (built-in) |
-| **CSS `@import`** | Yes (blitz-net) | Yes (recursive fetch + cache) | Yes (built-in) |
-| **Scrolling** | Yes | Yes | Yes (engine-managed, cursor-targeted) |
-| **Rendering path** | iced image Handle | iced image Handle | iced shader widget (direct GPU texture) |
-| **Incremental rendering** | No (experimental flag exists) | No | Yes |
-| **Navigation history** | No | No | Yes |
-| **Build deps** | Pure Rust | C++ (`clang`/`libclang`) | Pure Rust (git-only) |
-| **Rendering performance** | Low (Stylo + Vello CPU, needs `--release`) | Moderate | Best (full rendering pipeline) |
-| **Binary size impact** | Moderate | Small | Large (50-150+ MB) |
-| **License** | MIT/Apache-2.0 + MPL-2.0 (Stylo) | BSD | MPL-2.0 |
+| Feature | Blitz | litehtml | Servo | CEF |
+|---------|-------|----------|-------|-----|
+| **CSS flexbox / grid** | Yes (Firefox's Stylo engine) | No | Yes | Yes |
+| **CSS variables** | Yes | No | Yes | Yes |
+| **Table layout** | Yes | Yes | Yes | Yes |
+| **JavaScript** | No | No | Yes (SpiderMonkey) | Yes (V8) |
+| **Keyboard input** | Supported in blitz-dom, not yet wired | No | Yes | Yes |
+| **Text selection** | No (not yet in blitz-dom) | Yes | No (not yet wired) | Yes (Chromium-managed) |
+| **`:hover` CSS styles** | Tracked, not rendered (CPU cost) | Tracked, not rendered | Yes | Yes |
+| **Cursor changes** | Yes | Yes | Yes | Yes |
+| **Link navigation** | Yes | Yes | Yes | Yes |
+| **Image loading** | Yes (blitz-net, automatic) | Yes (manual fetch pipeline) | Yes (built-in) | Yes (built-in) |
+| **CSS `@import`** | Yes (blitz-net) | Yes (recursive fetch + cache) | Yes (built-in) | Yes (built-in) |
+| **Scrolling** | Yes | Yes | Yes (engine-managed, cursor-targeted) | Yes (engine-managed) |
+| **Rendering path** | iced image Handle | iced image Handle | iced shader widget (direct GPU texture) | iced shader widget (direct GPU texture) |
+| **Incremental rendering** | No (experimental flag exists) | No | Yes | Yes |
+| **Navigation history** | No | No | Yes | Yes |
+| **Build deps** | Pure Rust | C++ (`clang`/`libclang`) | Pure Rust (git-only) | C++ (CEF binary download) |
+| **Rendering performance** | Low (Stylo + Vello CPU, needs `--release`) | Moderate | Best (full rendering pipeline) | Best (full Chromium pipeline) |
+| **Binary size impact** | Moderate | Small | Large (50-150+ MB) | Large (~200-300 MB runtime) |
+| **License** | MIT/Apache-2.0 + MPL-2.0 (Stylo) | BSD | MPL-2.0 | MIT/Apache-2.0 (bindings) + BSD (CEF) |
 
 [Blitz]: https://github.com/DioxusLabs/blitz
 [litehtml]: https://github.com/franzos/litehtml-rs
 [Servo]: https://servo.org/
+[CEF]: https://github.com/tauri-apps/cef-rs
 
 Original developer: [LegitCamper/iced_webview](https://github.com/LegitCamper/iced_webview) (Sawyer Bristol and others)

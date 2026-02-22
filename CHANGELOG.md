@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.2] - 2026-02-22
+
+### Added
+- CEF engine — full Chromium browser via cef-rs (Tauri) behind the `cef` feature flag
+
+## [0.1.1] - 2026-02-22
+
+### Added
+- Minimal `webview` example (just the page, no buttons or view switching)
+- Shared `resolve_url()` and `is_same_page()` utilities to reduce duplication across engines
+- Servo key mappings for Insert, CapsLock, NumLock, ScrollLock, Pause, PrintScreen, ContextMenu
+
+### Fixed
+- Blitz hanging on page load — `drain_resources()` was triggering full resolve + render every 10ms tick; replaced with height-change detection, a resource tick budget, and a render height cap (8192px)
+
+### Changed
+- Updated README with rendering performance comparison, Blitz known issues, and engine docs
+
 ## [0.1.0] - 2026-02-20
 
 ### Added

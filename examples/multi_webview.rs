@@ -8,11 +8,18 @@ use iced_webview::{
     PageType, ViewId,
 };
 
-#[cfg(feature = "servo")]
+#[cfg(feature = "cef")]
+type Engine = iced_webview::Cef;
+#[cfg(all(feature = "servo", not(feature = "cef")))]
 type Engine = iced_webview::Servo;
-#[cfg(all(feature = "blitz", not(feature = "servo")))]
+#[cfg(all(feature = "blitz", not(feature = "servo"), not(feature = "cef")))]
 type Engine = iced_webview::Blitz;
-#[cfg(all(feature = "litehtml", not(feature = "blitz"), not(feature = "servo")))]
+#[cfg(all(
+    feature = "litehtml",
+    not(feature = "blitz"),
+    not(feature = "servo"),
+    not(feature = "cef")
+))]
 type Engine = iced_webview::Litehtml;
 use std::time::Duration;
 

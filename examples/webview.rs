@@ -2,11 +2,18 @@ use iced::{time, Element, Subscription, Task};
 use iced_webview::{Action, PageType, WebView};
 use std::time::Duration;
 
-#[cfg(feature = "servo")]
+#[cfg(feature = "cef")]
+type Engine = iced_webview::Cef;
+#[cfg(all(feature = "servo", not(feature = "cef")))]
 type Engine = iced_webview::Servo;
-#[cfg(all(feature = "blitz", not(feature = "servo")))]
+#[cfg(all(feature = "blitz", not(feature = "servo"), not(feature = "cef")))]
 type Engine = iced_webview::Blitz;
-#[cfg(all(feature = "litehtml", not(feature = "blitz"), not(feature = "servo")))]
+#[cfg(all(
+    feature = "litehtml",
+    not(feature = "blitz"),
+    not(feature = "servo"),
+    not(feature = "cef")
+))]
 type Engine = iced_webview::Litehtml;
 
 static URL: &str = "https://docs.rs/iced/latest/iced/index.html";

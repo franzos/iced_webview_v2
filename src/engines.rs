@@ -18,6 +18,10 @@ pub mod litehtml;
 #[cfg(feature = "servo")]
 pub mod servo;
 
+/// A CEF/Chromium implementation of Engine (full browser via cef-rs)
+#[cfg(feature = "cef")]
+pub mod cef_engine;
+
 /// Creation of new pages to be of a html type or a url
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum PageType {

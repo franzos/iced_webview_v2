@@ -45,6 +45,9 @@ pub use engines::litehtml::Litehtml;
 #[cfg(feature = "servo")]
 pub use engines::servo::Servo;
 
+#[cfg(feature = "cef")]
+pub use engines::cef_engine::{cef_subprocess_check, Cef};
+
 pub(crate) mod util;
 
 #[cfg(any(feature = "litehtml", feature = "blitz"))]
