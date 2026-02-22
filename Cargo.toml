@@ -1,6 +1,6 @@
 [package]
 name = "iced_webview_v2"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.90.0"
 description = "An easily embedded webview library for iced"
@@ -79,6 +79,9 @@ stylo_traits = { git = "https://github.com/servo/stylo", rev = "9a413b4d05d899c3
 stylo_atoms = { git = "https://github.com/servo/stylo", rev = "9a413b4d05d899c3baedd7b648dbf2c23dc9b879" }
 stylo_dom = { git = "https://github.com/servo/stylo", rev = "9a413b4d05d899c3baedd7b648dbf2c23dc9b879" }
 selectors = { git = "https://github.com/servo/stylo", rev = "9a413b4d05d899c3baedd7b648dbf2c23dc9b879" }
+
+[[example]]
+name = "webview"
 
 [[example]]
 name = "email"

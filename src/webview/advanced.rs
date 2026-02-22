@@ -273,13 +273,8 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                         Ok(resolved) => {
                             let scheme = resolved.scheme();
                             if scheme == "http" || scheme == "https" {
-                                let is_same_page = base.as_ref().is_some_and(|cur| {
-                                    resolved.scheme() == cur.scheme()
-                                        && resolved.host() == cur.host()
-                                        && resolved.port() == cur.port()
-                                        && resolved.path() == cur.path()
-                                        && resolved.query() == cur.query()
-                                });
+                                let is_same_page = base.as_ref()
+                                    .is_some_and(|cur| crate::util::is_same_page(&resolved, cur));
                                 if is_same_page {
                                     if let Some(fragment) = resolved.fragment() {
                                         self.engine.scroll_to_fragment(id, fragment);
@@ -310,15 +305,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     let pending = self.engine.take_pending_images();
                     for (view_id, src, baseurl, redraw_on_ready) in pending {
                         let page_url = self.engine.get_url(view_id);
-                        let resolved = Url::parse(&src)
-                            .or_else(|_| {
-                                if !baseurl.is_empty() {
-                                    Url::parse(&baseurl).and_then(|b| b.join(&src))
-                                } else {
-                                    Err(url::ParseError::RelativeUrlWithoutBase)
-                                }
-                            })
-                            .or_else(|_| Url::parse(&page_url).and_then(|base| base.join(&src)));
+                        let resolved = crate::util::resolve_url(&src, &baseurl, &page_url);
                         let resolved = match resolved {
                             Ok(u) => u,
                             Err(_) => continue,
@@ -364,15 +351,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     let pending = self.engine.take_pending_images();
                     for (view_id, src, baseurl, redraw_on_ready) in pending {
                         let page_url = self.engine.get_url(view_id);
-                        let resolved = Url::parse(&src)
-                            .or_else(|_| {
-                                if !baseurl.is_empty() {
-                                    Url::parse(&baseurl).and_then(|b| b.join(&src))
-                                } else {
-                                    Err(url::ParseError::RelativeUrlWithoutBase)
-                                }
-                            })
-                            .or_else(|_| Url::parse(&page_url).and_then(|base| base.join(&src)));
+                        let resolved = crate::util::resolve_url(&src, &baseurl, &page_url);
                         let resolved = match resolved {
                             Ok(u) => u,
                             Err(_) => continue,

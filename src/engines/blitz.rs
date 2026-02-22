@@ -55,6 +55,11 @@ struct BlitzView {
     cursor: Interaction,
     last_frame: ImageInfo,
     needs_render: bool,
+    /// Number of update ticks to keep draining resources after goto().
+    /// blitz_net fetches sub-resources (images, CSS) asynchronously; we need
+    /// to call resolve() periodically to pick them up. Once the budget runs
+    /// out we stop polling (resolve is expensive for large documents).
+    resource_ticks: u32,
     scroll_y: f32,
     content_height: f32,
     size: Size<u32>,
@@ -148,10 +153,17 @@ fn create_document(
     doc
 }
 
-/// Render the full document to an RGBA pixel buffer.
+/// Max render height in logical pixels. Prevents multi-hundred-MB pixel
+/// buffers for very tall documents (e.g. docs.rs pages). Content beyond
+/// this height is reachable via scrolling but not pre-rasterized.
+const MAX_RENDER_HEIGHT: f32 = 8192.0;
+
+/// Render the document to an RGBA pixel buffer.
 ///
-/// The buffer covers the entire content height so the widget layer can
-/// scroll by offsetting the draw position — no re-render needed per scroll.
+/// The buffer height is capped at `MAX_RENDER_HEIGHT` logical pixels to
+/// keep memory and CPU usage bounded. The widget layer uses `content_height`
+/// / `scroll_y` for scroll calculations; `content_height` is clamped to the
+/// rendered height so the scrollbar range matches what's actually rasterized.
 fn render_view(view: &mut BlitzView) {
     let w = view.size.width;
     let h = view.size.height;
@@ -170,11 +182,12 @@ fn render_view(view: &mut BlitzView) {
     };
 
     let root_height = doc.root_element().final_layout.size.height;
-    view.content_height = root_height;
+    let capped_height = root_height.min(MAX_RENDER_HEIGHT);
+    view.content_height = capped_height;
 
     let scale = view.scale as f64;
     let render_w = (w as f64 * scale) as u32;
-    let render_h = ((root_height as f64).max(h as f64) * scale) as u32;
+    let render_h = ((capped_height as f64).max(h as f64) * scale) as u32;
 
     if render_w == 0 || render_h == 0 {
         view.last_frame = ImageInfo::blank(w, h);
@@ -194,32 +207,41 @@ fn render_view(view: &mut BlitzView) {
     view.needs_render = false;
 }
 
-/// Drain completed resource fetches via the document's internal channel.
-fn drain_resources(view: &mut BlitzView) -> bool {
+/// How many update ticks to keep draining resources after goto().
+/// At 10ms per tick this gives ~30s for sub-resources to arrive.
+const RESOURCE_TICK_BUDGET: u32 = 3000;
+
+/// Drain completed resource fetches and re-resolve if something changed.
+/// Only called while `resource_ticks > 0` (after a goto).
+fn drain_and_resolve(view: &mut BlitzView) -> bool {
     let doc = match view.document.as_mut() {
         Some(d) => d,
         None => return false,
     };
-    doc.handle_messages();
-    // handle_messages processes resources internally; assume there were
-    // updates if we have a document (the resolve pass will be a no-op if
-    // nothing changed).
-    true
+    let height_before = doc.root_element().final_layout.size.height;
+    doc.resolve(0.0);
+    let height_after = doc.root_element().final_layout.size.height;
+    height_before != height_after
 }
 
 impl Engine for Blitz {
+    /// Blitz cannot fetch the initial HTML page from a URL — the widget layer
+    /// handles that via `fetch_html`. However, all sub-resource fetching
+    /// (images, CSS `@import`) is handled internally by `blitz_net::Provider`,
+    /// so the widget layer's image pipeline (`take_pending_images`,
+    /// `load_image_from_bytes`) is not used. Returning `false` here is correct
+    /// for its intended purpose: telling the widget layer to fetch page HTML.
     fn handles_urls(&self) -> bool {
         false
     }
 
     fn update(&mut self) {
         for view in &mut self.views {
-            let loaded = drain_resources(view);
-            if loaded {
-                if let Some(ref mut doc) = view.document {
-                    doc.resolve(0.0);
+            if view.resource_ticks > 0 {
+                view.resource_ticks -= 1;
+                if drain_and_resolve(view) {
+                    view.needs_render = true;
                 }
-                view.needs_render = true;
             }
         }
     }
@@ -272,6 +294,7 @@ impl Engine for Blitz {
         } else {
             None
         };
+        let has_document = document.is_some();
 
         let mut view = BlitzView {
             id,
@@ -284,6 +307,7 @@ impl Engine for Blitz {
             cursor: Interaction::Idle,
             last_frame: ImageInfo::blank(w, h),
             needs_render: true,
+            resource_ticks: if has_document { RESOURCE_TICK_BUDGET } else { 0 },
             scroll_y: 0.0,
             content_height: 0.0,
             size,
@@ -348,7 +372,10 @@ impl Engine for Blitz {
     }
 
     fn handle_keyboard_event(&mut self, _id: ViewId, _event: keyboard::Event) {
-        // No-op: Blitz has no keyboard interaction (no JS).
+        // TODO: blitz-dom supports keyboard events (text input, Tab focus,
+        // copy/paste) via UiEvent::KeyDown/KeyUp — we need to translate iced
+        // keyboard::Event into BlitzKeyEvent and call
+        // doc.handle_ui_event(UiEvent::KeyDown(..)) here.
     }
 
     fn handle_mouse_event(&mut self, id: ViewId, point: Point, event: mouse::Event) {
@@ -452,6 +479,7 @@ impl Engine for Blitz {
                 ));
                 view.scroll_y = 0.0;
                 view.needs_render = true;
+                view.resource_ticks = RESOURCE_TICK_BUDGET;
             }
             PageType::Url(url) => {
                 view.url = url;

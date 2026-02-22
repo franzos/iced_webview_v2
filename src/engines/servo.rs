@@ -78,6 +78,15 @@ struct ServoView {
 /// Servo handles its own networking, scrolling, and JavaScript execution.
 /// Rendering is software-based via `SoftwareRenderingContext`, producing RGBA
 /// pixel buffers that map directly to iced's image widget.
+///
+/// ## Text selection / clipboard
+///
+/// Servo manages text selection and clipboard operations (Ctrl+C / Ctrl+V)
+/// internally — the selected text is rendered as part of the painted frame and
+/// copy/paste goes through Servo's `ClipboardDelegate`. The embedding API does
+/// not expose a way to query the current DOM selection, so `get_selected_text()`
+/// and `get_selection_rects()` cannot be implemented and use the default (empty)
+/// trait implementations.
 pub struct Servo {
     instance: ServoInstance,
     rendering_context: Rc<SoftwareRenderingContext>,
@@ -516,6 +525,13 @@ fn iced_key_to_keyboard_types(key: &keyboard::Key) -> Option<keyboard_types_serv
                 Named::Backspace => keyboard_types_servo::Key::Named(NamedKey::Backspace),
                 Named::Delete => keyboard_types_servo::Key::Named(NamedKey::Delete),
                 Named::Escape => keyboard_types_servo::Key::Named(NamedKey::Escape),
+                Named::Insert => keyboard_types_servo::Key::Named(NamedKey::Insert),
+                Named::CapsLock => keyboard_types_servo::Key::Named(NamedKey::CapsLock),
+                Named::NumLock => keyboard_types_servo::Key::Named(NamedKey::NumLock),
+                Named::ScrollLock => keyboard_types_servo::Key::Named(NamedKey::ScrollLock),
+                Named::Pause => keyboard_types_servo::Key::Named(NamedKey::Pause),
+                Named::PrintScreen => keyboard_types_servo::Key::Named(NamedKey::PrintScreen),
+                Named::ContextMenu => keyboard_types_servo::Key::Named(NamedKey::ContextMenu),
                 Named::ArrowDown => keyboard_types_servo::Key::Named(NamedKey::ArrowDown),
                 Named::ArrowLeft => keyboard_types_servo::Key::Named(NamedKey::ArrowLeft),
                 Named::ArrowRight => keyboard_types_servo::Key::Named(NamedKey::ArrowRight),
