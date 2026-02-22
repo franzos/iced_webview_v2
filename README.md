@@ -81,6 +81,8 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 - **Large binary** — adds 50-150+ MB to the final binary due to SpiderMonkey and Servo's full rendering pipeline.
 - **System deps** — needs `fontconfig`, `make`, `cmake`, `clang` (recent version), and `nasm` at build time.
 - **No text selection** — not yet wired up through the embedding API.
+- **Intermittent SpiderMonkey crashes** — servo's JS engine can segfault during script execution on certain pages (`JS::GetScriptPrivate`). This is an upstream servo/SpiderMonkey issue, not specific to the embedding. Pages with heavy JS are more likely to trigger it.
+- **Rendering** — uses iced's `shader` widget with a persistent GPU texture updated in-place via `queue.write_texture()` each frame. This avoids the texture cache churn (and visible flickering) that would otherwise occur with iced's image Handle path during rapid frame updates like scrolling.
 
 ## TODO
 
@@ -103,7 +105,8 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 | **Link navigation** | Yes | Yes | Yes |
 | **Image loading** | Yes (blitz-net, automatic) | Yes (manual fetch pipeline) | Yes (built-in) |
 | **CSS `@import`** | Yes (blitz-net) | Yes (recursive fetch + cache) | Yes (built-in) |
-| **Scrolling** | Yes | Yes | Yes (engine-managed) |
+| **Scrolling** | Yes | Yes | Yes (engine-managed, cursor-targeted) |
+| **Rendering path** | iced image Handle | iced image Handle | iced shader widget (direct GPU texture) |
 | **Incremental rendering** | No (experimental flag exists) | No | Yes |
 | **Navigation history** | No | No | Yes |
 | **Build deps** | Pure Rust | C++ (`clang`/`libclang`) | Pure Rust (git-only) |

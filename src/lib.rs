@@ -24,6 +24,8 @@
 //! Then call the usual `view/update` methods — see
 //! [examples](https://github.com/franzos/iced_webview_v2/tree/main/examples) for full working code.
 //!
+use std::sync::Arc;
+
 use iced::widget::image;
 
 /// Engine Trait and Engine implementations
@@ -54,15 +56,18 @@ pub struct ImageInfo {
     width: u32,
     height: u32,
     handle: image::Handle,
+    raw_pixels: Arc<Vec<u8>>,
 }
 
 impl Default for ImageInfo {
     fn default() -> Self {
         let pixels = vec![255; (Self::WIDTH as usize * Self::HEIGHT as usize) * 4];
+        let raw_pixels = Arc::new(pixels.clone());
         Self {
             width: Self::WIDTH,
             height: Self::HEIGHT,
             handle: image::Handle::from_rgba(Self::WIDTH, Self::HEIGHT, pixels),
+            raw_pixels,
         }
     }
 }
@@ -80,10 +85,12 @@ impl ImageInfo {
             pixels.chunks_mut(4).for_each(|chunk| chunk.swap(0, 2));
         }
 
+        let raw_pixels = Arc::new(pixels.clone());
         Self {
             width,
             height,
             handle: image::Handle::from_rgba(width, height, pixels),
+            raw_pixels,
         }
     }
 
@@ -102,12 +109,19 @@ impl ImageInfo {
         self.height
     }
 
+    /// Raw RGBA pixel data for direct GPU upload (shader widget path).
+    pub fn pixels(&self) -> Arc<Vec<u8>> {
+        Arc::clone(&self.raw_pixels)
+    }
+
     fn blank(width: u32, height: u32) -> Self {
         let pixels = vec![255; (width as usize * height as usize) * 4];
+        let raw_pixels = Arc::new(pixels.clone());
         Self {
             width,
             height,
             handle: image::Handle::from_rgba(width, height, pixels),
+            raw_pixels,
         }
     }
 }

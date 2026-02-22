@@ -482,14 +482,46 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     /// Returns webview widget for the current view
     pub fn view<'a, T: 'a>(&'a self) -> Element<'a, Action, T> {
         let id = self.get_current_view_id();
-        WebViewWidget::new(
-            self.engine.get_view(id),
-            self.engine.get_cursor(id),
-            self.engine.get_selection_rects(id),
-            self.engine.get_scroll_y(id),
-            self.engine.get_content_height(id),
-        )
-        .into()
+        let content_height = self.engine.get_content_height(id);
+
+        if content_height > 0.0 {
+            // Engines that render a full-document buffer (blitz, litehtml):
+            // use the image Handle widget with y-offset scrolling.
+            WebViewWidget::new(
+                self.engine.get_view(id),
+                self.engine.get_cursor(id),
+                self.engine.get_selection_rects(id),
+                self.engine.get_scroll_y(id),
+                content_height,
+            )
+            .into()
+        } else {
+            // Engines that manage their own scrolling and produce a viewport-
+            // sized frame each tick (servo): use the shader widget for direct
+            // GPU texture updates, avoiding Handle cache churn.
+            #[cfg(feature = "servo")]
+            {
+                use crate::webview::shader_widget::WebViewShaderProgram;
+                iced::widget::Shader::new(WebViewShaderProgram::new(
+                    self.engine.get_view(id),
+                    self.engine.get_cursor(id),
+                ))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+            }
+            #[cfg(not(feature = "servo"))]
+            {
+                WebViewWidget::new(
+                    self.engine.get_view(id),
+                    self.engine.get_cursor(id),
+                    self.engine.get_selection_rects(id),
+                    0.0,
+                    0.0,
+                )
+                .into()
+            }
+        }
     }
 
     /// Get the current view's image info for direct rendering

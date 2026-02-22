@@ -10,7 +10,9 @@
              (gnu packages freedesktop)
              (gnu packages xdisorg)
              (gnu packages vulkan)
-             (gnu packages fontutils))
+             (gnu packages fontutils)
+             (gnu packages gl)
+             (gnu packages gdb))
 
 (define openssl-with-dir
   (package
@@ -28,11 +30,14 @@
        (list rust-1.92 "cargo")
        rust-analyzer
        gcc-toolchain
-       clang-toolchain
+       clang-toolchain-21
        pkg-config
        wayland
        wayland-protocols
        libxkbcommon
        vulkan-loader
        fontconfig
+       mesa
+       gnu-make
+       gdb
        openssl-with-dir))

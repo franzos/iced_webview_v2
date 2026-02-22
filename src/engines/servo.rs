@@ -70,6 +70,7 @@ struct ServoView {
     last_frame: ImageInfo,
     needs_render: bool,
     size: Size<u32>,
+    last_cursor: DevicePoint,
 }
 
 /// Full browser engine backed by [Servo](https://servo.org/) (HTML5, CSS3, JS).
@@ -259,6 +260,7 @@ impl Engine for Servo {
             last_frame: ImageInfo::blank(w, h),
             needs_render: true,
             size,
+            last_cursor: DevicePoint::new(w as f32 / 2.0, h as f32 / 2.0),
         };
         self.views.push(view);
         id
@@ -320,13 +322,14 @@ impl Engine for Servo {
     }
 
     fn handle_mouse_event(&mut self, id: ViewId, point: Point, event: mouse::Event) {
-        let view = self.find_view_mut(id);
         let device_point = DevicePoint::new(point.x, point.y);
+        self.find_view_mut(id).last_cursor = device_point;
 
         match event {
             mouse::Event::ButtonPressed(button) => {
                 if let Some(servo_btn) = iced_button_to_servo(button) {
-                    view.webview
+                    self.find_view_mut(id)
+                        .webview
                         .notify_input_event(InputEvent::MouseButton(MouseButtonEvent {
                             action: MouseButtonAction::Down,
                             button: servo_btn,
@@ -336,7 +339,8 @@ impl Engine for Servo {
             }
             mouse::Event::ButtonReleased(button) => {
                 if let Some(servo_btn) = iced_button_to_servo(button) {
-                    view.webview
+                    self.find_view_mut(id)
+                        .webview
                         .notify_input_event(InputEvent::MouseButton(MouseButtonEvent {
                             action: MouseButtonAction::Up,
                             button: servo_btn,
@@ -345,7 +349,8 @@ impl Engine for Servo {
                 }
             }
             mouse::Event::CursorMoved { .. } => {
-                view.webview
+                self.find_view_mut(id)
+                    .webview
                     .notify_input_event(InputEvent::MouseMove(MouseMoveEvent {
                         point: WebViewPoint::Device(device_point),
                         is_compatibility_event_for_touch: false,
@@ -368,11 +373,7 @@ impl Engine for Servo {
                 (x as f64, y as f64, WheelMode::DeltaPixel)
             }
         };
-        // The center of the viewport as a reasonable scroll target
-        let center = DevicePoint::new(
-            view.size.width as f32 / 2.0,
-            view.size.height as f32 / 2.0,
-        );
+        let cursor_point = view.last_cursor;
         view.webview
             .notify_input_event(InputEvent::Wheel(WheelEvent {
                 delta: WheelDelta {
@@ -381,7 +382,7 @@ impl Engine for Servo {
                     z: 0.0,
                     mode,
                 },
-                point: WebViewPoint::Device(center),
+                point: WebViewPoint::Device(cursor_point),
             }));
     }
 
