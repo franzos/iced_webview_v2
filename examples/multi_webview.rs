@@ -27,6 +27,11 @@ static URL1: &str = "https://docs.rs/iced/latest/iced/index.html";
 static URL2: &str = "https://github.com/franzos/iced_webview_v2";
 
 fn main() -> iced::Result {
+    #[cfg(feature = "cef")]
+    if iced_webview::cef_subprocess_check() {
+        return Ok(());
+    }
+
     iced::application(App::new, App::update, App::view)
         .title("An multi webview application")
         .subscription(App::subscription)

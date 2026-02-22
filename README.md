@@ -24,7 +24,17 @@ This library supports
 - litehtml requires `clang`/`libclang` for building `litehtml-sys`
 - Servo requires `fontconfig`, `make`, `cmake`, `clang` (recent version), and `nasm` at build time
 - CEF downloads the Chromium Embedded Framework binary (~200-300 MB) at build time; requires subprocess handling (see below)
-- CEF on Guix: use `manifest-cef.scm` — `guix shell -m manifest-cef.scm` then `eval "$(./cef-link-flags.sh)" && CC=gcc cargo run --example webview --no-default-features --features cef`
+- CEF on Guix: use `manifest-cef.scm` with FHS emulation:
+  ```sh
+  guix shell --container --emulate-fhs --network \
+    --share=$HOME/.cargo --share=$HOME/.cache \
+    --expose=$XDG_RUNTIME_DIR --expose=/var/run/dbus \
+    -m manifest-cef.scm -- sh -c \
+    "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
+     DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS \
+     CARGO_TARGET_DIR=target-cef LD_LIBRARY_PATH=/lib:/lib/nss CC=gcc \
+     cargo run --example webview --no-default-features --features cef"
+  ```
 
 #### examples:
 
@@ -109,7 +119,7 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 
 ### CEF
 
-- **Single-process mode** — runs all Chromium threads in one process (`--single-process`). CEF's multi-process model requires resources (`.pak`, `icudtl.dat`, GL libs) to be discoverable by subprocesses, which is fragile on non-FHS systems (Guix, Nix). Single-process avoids this. `cef_subprocess_check()` is still available for multi-process setups.
+- **Multi-process mode** — CEF runs with standard multi-process architecture (renderer, GPU, utility subprocesses). On non-FHS systems (Guix, Nix), use an FHS-emulated container (`guix shell --container --emulate-fhs`) so subprocesses can find `.pak` resources, `icudtl.dat`, and shared libraries at standard paths. Call `cef_subprocess_check()` at the top of `main()`.
 - **Large runtime** — ships ~200-300 MB of Chromium binaries alongside your application.
 - **Not Rust-native** — C++ under the hood, Rust bindings via [cef-rs](https://github.com/tauri-apps/cef-rs).
 - **CEF binary download** — the `cef-dll-sys` build script downloads the CEF binary distribution at build time.

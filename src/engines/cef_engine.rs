@@ -27,7 +27,7 @@ struct SharedState {
     scale_factor: f32,
 }
 
-// -- CEF App handler (single-process + disable GPU for OSR) --
+// -- CEF App handler --
 
 wrap_app! {
     struct OsrApp;
@@ -39,14 +39,22 @@ wrap_app! {
             command_line: Option<&mut CommandLine>,
         ) {
             if let Some(cmd) = command_line {
-                // Run everything in a single process. CEF's multi-process
-                // model requires resources (.pak, icudtl.dat, GL libs) to
-                // be discoverable by subprocesses, which is fragile on
-                // non-FHS systems (Guix, Nix). Single-process avoids this.
-                cmd.append_switch(Some(&CefString::from("single-process")));
-                // Disable hardware GPU — OSR delivers pixels via on_paint.
+                // CEF defaults to X11. When WAYLAND_DISPLAY is set, tell
+                // Chromium's ozone layer to use the Wayland backend.
+                if std::env::var("WAYLAND_DISPLAY").is_ok() {
+                    cmd.append_switch_with_value(
+                        Some(&CefString::from("ozone-platform")),
+                        Some(&CefString::from("wayland")),
+                    );
+                }
+
+                // OSR delivers pixels via on_paint() — GPU compositing
+                // inside CEF isn't needed. Disable it and run any
+                // remaining GL calls in-process so the GPU subprocess
+                // doesn't need real driver access (containers, Flatpak).
                 cmd.append_switch(Some(&CefString::from("disable-gpu")));
                 cmd.append_switch(Some(&CefString::from("disable-gpu-compositing")));
+                cmd.append_switch(Some(&CefString::from("in-process-gpu")));
             }
         }
     }
@@ -195,9 +203,14 @@ struct CefView {
 ///
 /// ## Subprocess requirement
 ///
-/// CEF launches helper sub-processes using the same binary. Call
-/// [`cef_subprocess_check`] at the very top of `main()` — if it returns
-/// `true`, the process is a CEF subprocess and should exit immediately.
+/// CEF uses multi-process mode — helper sub-processes (renderer, GPU,
+/// utility) are spawned from the same binary. Call [`cef_subprocess_check`]
+/// at the very top of `main()` — if it returns `true`, the process is a
+/// CEF subprocess and should exit immediately.
+///
+/// On non-FHS systems (Guix, Nix), run inside an FHS-emulated container
+/// so subprocesses can discover `.pak` resources, `icudtl.dat`, and shared
+/// libraries at standard paths.
 ///
 /// ```rust,ignore
 /// fn main() -> iced::Result {
