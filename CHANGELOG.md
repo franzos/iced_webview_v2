@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3] - 2026-02-22
+
+### Changed
+- Default feature switched from `blitz` to `litehtml` — blitz and servo are git-only and can't be published to crates.io
+- Publish workflow uses `publish.sh` to strip git-only deps before publishing
+
 ## [0.1.2] - 2026-02-22
 
 ### Added

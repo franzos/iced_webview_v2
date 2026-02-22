@@ -17,8 +17,8 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
-    - name: Check (blitz)
-      run: cargo check --features blitz --verbose
+    - name: Check (default/litehtml)
+      run: cargo check --verbose
     - name: Check (litehtml)
       run: cargo check --no-default-features --features litehtml --verbose
     - name: Check (servo)

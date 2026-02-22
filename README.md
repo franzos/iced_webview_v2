@@ -36,14 +36,18 @@ This library supports
      cargo run --example webview --no-default-features --features cef"
   ```
 
+### Default engine
+
+The default feature is `litehtml` — it's lightweight, pure-crate.io, and compiles fast. Blitz and Servo are git-only deps and can't be published to crates.io, so they require `--features blitz` or `--features servo` explicitly.
+
 #### examples:
 
 ##### `examples/webview`
 Minimal example — just the web view, nothing else
 ```sh
 cargo run --release --example webview
-# or with litehtml
-cargo run --example webview --no-default-features --features litehtml
+# or with blitz
+cargo run --example webview --no-default-features --features blitz
 # or with servo
 cargo run --example webview --no-default-features --features servo
 # or with cef

@@ -1,6 +1,6 @@
 [package]
 name = "iced_webview_v2"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 rust-version = "1.90.0"
 description = "An easily embedded webview library for iced"
@@ -23,7 +23,7 @@ opt-level = "s"
 lto = "thin"
 
 [features]
-default = ["blitz"]
+default = ["litehtml"]
 blitz = [
     "dep:blitz-dom",
     "dep:blitz-html",
