@@ -12,7 +12,11 @@ pub(crate) fn html_escape(s: &str) -> String {
 /// 1. Parse `src` as absolute URL
 /// 2. Resolve against `baseurl` (e.g. stylesheet URL)
 /// 3. Resolve against `page_url`
-pub(crate) fn resolve_url(src: &str, baseurl: &str, page_url: &str) -> Result<Url, url::ParseError> {
+pub(crate) fn resolve_url(
+    src: &str,
+    baseurl: &str,
+    page_url: &str,
+) -> Result<Url, url::ParseError> {
     Url::parse(src)
         .or_else(|_| {
             if !baseurl.is_empty() {

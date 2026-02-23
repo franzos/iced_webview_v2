@@ -101,10 +101,7 @@ async fn fetch_css_recursive(
 /// Fetch a single CSS URL with size limits. Returns None on failure.
 async fn fetch_css(client: &reqwest::Client, url: &Url) -> Option<String> {
     let resp = client.get(url.clone()).send().await.ok()?;
-    if resp
-        .content_length()
-        .is_some_and(|len| len > MAX_CSS_SIZE)
-    {
+    if resp.content_length().is_some_and(|len| len > MAX_CSS_SIZE) {
         return None;
     }
     let bytes = resp.bytes().await.ok()?;

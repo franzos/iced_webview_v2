@@ -278,7 +278,8 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                         Ok(resolved) => {
                             let scheme = resolved.scheme();
                             if scheme == "http" || scheme == "https" {
-                                let is_same_page = base.as_ref()
+                                let is_same_page = base
+                                    .as_ref()
                                     .is_some_and(|cur| crate::util::is_same_page(&resolved, cur));
                                 if is_same_page {
                                     if let Some(fragment) = resolved.fragment() {
@@ -547,9 +548,7 @@ impl<'a> shader::Program<Action> for AdvancedShaderProgram<'a> {
                 } = event
                 {
                     if modifiers.command() && c.as_str() == "c" {
-                        return Some(shader::Action::publish(Action::CopySelection(
-                            self.view_id,
-                        )));
+                        return Some(shader::Action::publish(Action::CopySelection(self.view_id)));
                     }
                 }
                 Some(shader::Action::publish(Action::SendKeyboardEvent(

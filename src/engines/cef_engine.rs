@@ -314,7 +314,11 @@ pub fn cef_subprocess_check() -> bool {
     };
 
     let mut app = OsrApp::new();
-    let ret = execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut());
+    let ret = execute_process(
+        Some(args.as_main_args()),
+        Some(&mut app),
+        std::ptr::null_mut(),
+    );
 
     if is_browser {
         false
@@ -434,10 +438,8 @@ impl Engine for Cef {
         let initial_url: CefString = match &content {
             Some(PageType::Url(u)) => CefString::from(u.as_str()),
             Some(PageType::Html(html)) => {
-                let data_url = format!(
-                    "data:text/html;charset=utf-8,{}",
-                    urlencoding::encode(html)
-                );
+                let data_url =
+                    format!("data:text/html;charset=utf-8,{}", urlencoding::encode(html));
                 CefString::from(data_url.as_str())
             }
             None => CefString::from("about:blank"),
@@ -590,9 +592,7 @@ impl Engine for Cef {
         };
 
         let (dx, dy) = match delta {
-            mouse::ScrollDelta::Lines { x, y } => {
-                ((x * 40.0) as c_int, (y * 40.0) as c_int)
-            }
+            mouse::ScrollDelta::Lines { x, y } => ((x * 40.0) as c_int, (y * 40.0) as c_int),
             mouse::ScrollDelta::Pixels { x, y } => (x as c_int, y as c_int),
         };
 

@@ -22,10 +22,7 @@ fn main() {
                                 std::env::consts::ARCH
                             ));
                             if cef_dir.exists() {
-                                println!(
-                                    "cargo:rustc-link-arg=-Wl,-rpath,{}",
-                                    cef_dir.display()
-                                );
+                                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", cef_dir.display());
                                 break;
                             }
                         }

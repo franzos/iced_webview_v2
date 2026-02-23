@@ -9,14 +9,16 @@ use rand::Rng;
 use super::{Engine, PageType, PixelFormat, ViewId};
 use crate::ImageInfo;
 
+use dpi::PhysicalSize;
 use servo::{
     Cursor, InputEvent, KeyboardEvent, MouseButton as ServoMouseButton, MouseButtonAction,
     MouseButtonEvent, MouseMoveEvent, RenderingContext, Servo as ServoInstance, ServoBuilder,
     SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate, WheelDelta, WheelEvent,
     WheelMode,
 };
-use servo::{DeviceIndependentPixel, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, WebViewPoint};
-use dpi::PhysicalSize;
+use servo::{
+    DeviceIndependentPixel, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, WebViewPoint,
+};
 use url::Url;
 
 /// No-op waker — the iced subscription tick already drives `spin_event_loop`.
@@ -97,8 +99,8 @@ pub struct Servo {
 impl Default for Servo {
     fn default() -> Self {
         let size = PhysicalSize::new(ImageInfo::WIDTH, ImageInfo::HEIGHT);
-        let rendering_context = SoftwareRenderingContext::new(size)
-            .expect("failed to create SoftwareRenderingContext");
+        let rendering_context =
+            SoftwareRenderingContext::new(size).expect("failed to create SoftwareRenderingContext");
         let rendering_context = Rc::new(rendering_context);
 
         let instance = ServoBuilder::default()
@@ -233,10 +235,8 @@ impl Engine for Servo {
         let (url_str, initial_url) = match &content {
             Some(PageType::Url(u)) => (u.clone(), Url::parse(u).ok()),
             Some(PageType::Html(html)) => {
-                let data_url = format!(
-                    "data:text/html;charset=utf-8,{}",
-                    urlencoding::encode(html)
-                );
+                let data_url =
+                    format!("data:text/html;charset=utf-8,{}", urlencoding::encode(html));
                 (String::new(), Url::parse(&data_url).ok())
             }
             None => (String::new(), None),
@@ -312,9 +312,11 @@ impl Engine for Servo {
         }
         self.scale_factor = scale;
         for view in &mut self.views {
-            view.webview.set_hidpi_scale_factor(
-                euclid::Scale::<f32, DeviceIndependentPixel, DevicePixel>::new(scale),
-            );
+            view.webview.set_hidpi_scale_factor(euclid::Scale::<
+                f32,
+                DeviceIndependentPixel,
+                DevicePixel,
+            >::new(scale));
             view.needs_render = true;
         }
     }
@@ -322,8 +324,7 @@ impl Engine for Servo {
     fn handle_keyboard_event(&mut self, id: ViewId, event: keyboard::Event) {
         let view = self.find_view_mut(id);
         if let Some(kb) = iced_keyboard_to_servo(event) {
-            view.webview
-                .notify_input_event(InputEvent::Keyboard(kb));
+            view.webview.notify_input_event(InputEvent::Keyboard(kb));
         }
     }
 
@@ -372,12 +373,8 @@ impl Engine for Servo {
     fn scroll(&mut self, id: ViewId, delta: mouse::ScrollDelta) {
         let view = self.find_view_mut(id);
         let (dx, dy, mode) = match delta {
-            mouse::ScrollDelta::Lines { x, y } => {
-                (x as f64, y as f64, WheelMode::DeltaLine)
-            }
-            mouse::ScrollDelta::Pixels { x, y } => {
-                (x as f64, y as f64, WheelMode::DeltaPixel)
-            }
+            mouse::ScrollDelta::Lines { x, y } => (x as f64, y as f64, WheelMode::DeltaLine),
+            mouse::ScrollDelta::Pixels { x, y } => (x as f64, y as f64, WheelMode::DeltaPixel),
         };
         let cursor_point = view.last_cursor;
         view.webview

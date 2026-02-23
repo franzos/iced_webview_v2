@@ -307,7 +307,11 @@ impl Engine for Blitz {
             cursor: Interaction::Idle,
             last_frame: ImageInfo::blank(w, h),
             needs_render: true,
-            resource_ticks: if has_document { RESOURCE_TICK_BUDGET } else { 0 },
+            resource_ticks: if has_document {
+                RESOURCE_TICK_BUDGET
+            } else {
+                0
+            },
             scroll_y: 0.0,
             content_height: 0.0,
             size,
