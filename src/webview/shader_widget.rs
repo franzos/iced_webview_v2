@@ -30,9 +30,9 @@ pub struct ShaderState {
 }
 
 pub struct WebViewPrimitive {
-    pixels: Arc<Vec<u8>>,
-    width: u32,
-    height: u32,
+    pub(crate) pixels: Arc<Vec<u8>>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 impl std::fmt::Debug for WebViewPrimitive {

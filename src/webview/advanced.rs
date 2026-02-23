@@ -16,6 +16,11 @@ use url::Url;
 
 use crate::{engines, ImageInfo, PageType, ViewId};
 
+#[cfg(any(feature = "servo", feature = "cef"))]
+use crate::webview::shader_widget::WebViewPrimitive;
+#[cfg(any(feature = "servo", feature = "cef"))]
+use iced::widget::shader;
+
 #[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -449,16 +454,150 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
 
     /// Like a normal `view()` method in iced, but takes an id of the desired view
     pub fn view<'a, T: 'a>(&'a self, id: usize) -> Element<'a, Action, T> {
-        WebViewWidget::new(
-            id,
-            self.view_size,
-            self.engine.get_view(id),
-            self.engine.get_cursor(id),
-            self.engine.get_selection_rects(id),
-            self.engine.get_scroll_y(id),
-            self.engine.get_content_height(id),
-        )
-        .into()
+        let content_height = self.engine.get_content_height(id);
+
+        if content_height > 0.0 {
+            WebViewWidget::new(
+                id,
+                self.view_size,
+                self.engine.get_view(id),
+                self.engine.get_cursor(id),
+                self.engine.get_selection_rects(id),
+                self.engine.get_scroll_y(id),
+                content_height,
+            )
+            .into()
+        } else {
+            #[cfg(any(feature = "servo", feature = "cef"))]
+            {
+                shader::Shader::new(AdvancedShaderProgram::new(
+                    id,
+                    self.engine.get_view(id),
+                    self.engine.get_cursor(id),
+                ))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+            }
+            #[cfg(not(any(feature = "servo", feature = "cef")))]
+            {
+                WebViewWidget::new(
+                    id,
+                    self.view_size,
+                    self.engine.get_view(id),
+                    self.engine.get_cursor(id),
+                    self.engine.get_selection_rects(id),
+                    0.0,
+                    0.0,
+                )
+                .into()
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "servo", feature = "cef"))]
+struct AdvancedShaderProgram<'a> {
+    view_id: ViewId,
+    image_info: &'a ImageInfo,
+    cursor: Interaction,
+}
+
+#[cfg(any(feature = "servo", feature = "cef"))]
+impl<'a> AdvancedShaderProgram<'a> {
+    fn new(view_id: ViewId, image_info: &'a ImageInfo, cursor: Interaction) -> Self {
+        Self {
+            view_id,
+            image_info,
+            cursor,
+        }
+    }
+}
+
+#[cfg(any(feature = "servo", feature = "cef"))]
+#[derive(Default)]
+struct AdvancedShaderState {
+    bounds: Size<u32>,
+}
+
+#[cfg(any(feature = "servo", feature = "cef"))]
+impl<'a> shader::Program<Action> for AdvancedShaderProgram<'a> {
+    type State = AdvancedShaderState;
+    type Primitive = WebViewPrimitive;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<shader::Action<Action>> {
+        let size = Size::new(bounds.width as u32, bounds.height as u32);
+        if state.bounds != size {
+            state.bounds = size;
+            return Some(shader::Action::publish(Action::Resize(size)));
+        }
+
+        match event {
+            Event::Keyboard(event) => {
+                if let keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Character(c),
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if modifiers.command() && c.as_str() == "c" {
+                        return Some(shader::Action::publish(Action::CopySelection(
+                            self.view_id,
+                        )));
+                    }
+                }
+                Some(shader::Action::publish(Action::SendKeyboardEvent(
+                    self.view_id,
+                    event.clone(),
+                )))
+            }
+            Event::Mouse(event) => {
+                if let Some(point) = cursor.position_in(bounds) {
+                    Some(shader::Action::publish(Action::SendMouseEvent(
+                        self.view_id,
+                        *event,
+                        point,
+                    )))
+                } else if matches!(event, mouse::Event::CursorLeft) {
+                    Some(shader::Action::publish(Action::SendMouseEvent(
+                        self.view_id,
+                        *event,
+                        Point::ORIGIN,
+                    )))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        _cursor: mouse::Cursor,
+        _bounds: Rectangle,
+    ) -> Self::Primitive {
+        WebViewPrimitive {
+            pixels: self.image_info.pixels(),
+            width: self.image_info.image_width(),
+            height: self.image_info.image_height(),
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &Self::State,
+        _bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Interaction {
+        self.cursor
     }
 }
 

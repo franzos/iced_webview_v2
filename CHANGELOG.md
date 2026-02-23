@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4] - 2026-02-23
+
+### Fixed
+- Servo engine view cutting off at ~2/3 screen height — viewport was never initialized after webview creation
+- Servo engine not resizing when window size changes — direct rendering context resize was short-circuiting servo's internal viewport/reflow pipeline
+- Advanced webview flickering with servo/cef — was using image Handle path instead of shader widget, causing texture cache churn during scrolling
+
 ## [0.1.3] - 2026-02-22
 
 ### Changed

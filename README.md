@@ -8,8 +8,12 @@ A library to embed Web views in iced applications
 This library supports
 - [Blitz] — Rust-native HTML/CSS renderer (Stylo + Taffy + Vello), modern CSS (flexbox, grid), no JS
 - [litehtml] — lightweight CPU-based HTML/CSS rendering, no JS or navigation (good for static content like emails)
-- [Servo] — full browser engine (HTML5, CSS3, JS via SpiderMonkey), software-rendered
+- [Servo] — full browser engine (HTML5, CSS3, JS via SpiderMonkey), rendered to CPU buffer for embedding
 - [CEF] — Chromium Embedded Framework via cef-rs, full Chromium browser compat (HTML5, CSS3, JS)
+
+| Blitz | litehtml | Servo | CEF |
+|-------|----------|-------|-----|
+| ![Blitz](assets/webview_blitz.png) | ![litehtml](assets/webview_litehtml.png) | ![Servo](assets/webview_servo.png) | ![CEF](assets/webview_cef.png) |
 
 ## Compatibility
 
@@ -56,7 +60,6 @@ cargo run --example webview --no-default-features --features cef
 
 ##### `examples/embedded_webview`
 A simple example to showcase an embedded webview (uses the basic webview)
-![image](https://raw.githubusercontent.com/franzos/iced_webview_v2/refs/heads/main/assets/embedded_webview.png)
 ```sh
 cargo run --example embedded_webview
 # or with litehtml
@@ -65,19 +68,6 @@ cargo run --example embedded_webview --no-default-features --features litehtml
 cargo run --example embedded_webview --no-default-features --features servo
 # or with cef
 cargo run --example embedded_webview --no-default-features --features cef
-```
-
-##### `examples/multi_webview`
-A more advanced example that uses the advanced webview module and has two simultaneous webviews open
-![image](https://raw.githubusercontent.com/franzos/iced_webview_v2/refs/heads/main/assets/multi_view.png)
-```sh
-cargo run --example multi_webview
-# or with litehtml
-cargo run --example multi_webview --no-default-features --features litehtml
-# or with servo
-cargo run --example multi_webview --no-default-features --features servo
-# or with cef
-cargo run --example multi_webview --no-default-features --features cef
 ```
 
 ##### `examples/email`
@@ -107,7 +97,7 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 
 ### litehtml
 
-- **Limited CSS support** — no flexbox, no grid, no CSS variables. Works well for table-based layouts and simple pages (emails, documentation).
+- **Limited CSS support** — basic flexbox, no grid, no CSS variables. Works well for table-based layouts and simple pages (emails, documentation).
 - **No `:hover` CSS rendering** — cursor changes work, but hover styles are not visually applied.
 - **No JavaScript or navigation history** — static rendering only.
 - **C++ dependency** — requires `clang`/`libclang` for building `litehtml-sys`.
@@ -141,7 +131,7 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 
 | Feature | Blitz | litehtml | Servo | CEF |
 |---------|-------|----------|-------|-----|
-| **CSS flexbox / grid** | Yes (Firefox's Stylo engine) | No | Yes | Yes |
+| **CSS flexbox / grid** | Yes (Firefox's Stylo engine) | Flexbox only (no grid) | Yes | Yes |
 | **CSS variables** | Yes | No | Yes | Yes |
 | **Table layout** | Yes | Yes | Yes | Yes |
 | **JavaScript** | No | No | Yes (SpiderMonkey) | Yes (V8) |
@@ -156,7 +146,7 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 | **Rendering path** | iced image Handle | iced image Handle | iced shader widget (direct GPU texture) | iced shader widget (direct GPU texture) |
 | **Incremental rendering** | No (experimental flag exists) | No | Yes | Yes |
 | **Navigation history** | No | No | Yes | Yes |
-| **Build deps** | Pure Rust | C++ (`clang`/`libclang`) | Pure Rust (git-only) | C++ (CEF binary download) |
+| **Build deps** | Pure Rust | C++ (`clang`/`libclang`) | Rust + system deps (git-only) | C++ (CEF binary download) |
 | **Rendering performance** | Low (Stylo + Vello CPU, needs `--release`) | Moderate | Best (full rendering pipeline) | Best (full Chromium pipeline) |
 | **Binary size impact** | Moderate | Small | Large (50-150+ MB) | Large (~200-300 MB runtime) |
 | **License** | MIT/Apache-2.0 + MPL-2.0 (Stylo) | BSD | MPL-2.0 | MIT/Apache-2.0 (bindings) + BSD (CEF) |

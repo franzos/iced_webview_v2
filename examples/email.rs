@@ -6,13 +6,18 @@ use iced::{
 use iced_webview::{Action, PageType, WebView};
 use std::time::Duration;
 
-#[cfg(feature = "servo")]
+#[cfg(feature = "cef")]
+type Engine = iced_webview::Cef;
+#[cfg(all(feature = "servo", not(feature = "cef")))]
 type Engine = iced_webview::Servo;
-
-#[cfg(all(feature = "blitz", not(feature = "servo")))]
+#[cfg(all(feature = "blitz", not(feature = "servo"), not(feature = "cef")))]
 type Engine = iced_webview::Blitz;
-
-#[cfg(all(feature = "litehtml", not(feature = "blitz"), not(feature = "servo")))]
+#[cfg(all(
+    feature = "litehtml",
+    not(feature = "blitz"),
+    not(feature = "servo"),
+    not(feature = "cef")
+))]
 type Engine = iced_webview::Litehtml;
 
 /// Sample email HTML -- table-based layout typical of marketing emails.
@@ -91,6 +96,10 @@ static EMAIL_HTML: &str = r##"
 "##;
 
 fn main() -> iced::Result {
+    #[cfg(feature = "cef")]
+    if iced_webview::cef_subprocess_check() {
+        return Ok(());
+    }
     iced::application(App::new, App::update, App::view)
         .title("Email Renderer")
         .subscription(App::subscription)

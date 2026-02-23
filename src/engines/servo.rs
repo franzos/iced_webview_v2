@@ -219,9 +219,6 @@ impl Engine for Servo {
         let h = size.height.max(1);
         let size = Size::new(w, h);
 
-        self.rendering_context
-            .resize(PhysicalSize::new(w, h));
-
         let delegate_state = Rc::new(DelegateState {
             url: RefCell::new(None),
             title: RefCell::new(None),
@@ -258,6 +255,7 @@ impl Engine for Servo {
         let webview = builder.build();
         webview.focus();
         webview.show();
+        webview.resize(PhysicalSize::new(w, h));
 
         let view = ServoView {
             id,
@@ -301,7 +299,6 @@ impl Engine for Servo {
 
     fn resize(&mut self, size: Size<u32>) {
         let phys = PhysicalSize::new(size.width.max(1), size.height.max(1));
-        self.rendering_context.resize(phys);
         for view in &mut self.views {
             view.size = size;
             view.webview.resize(phys);
