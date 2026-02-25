@@ -66,13 +66,13 @@ tokio = { version = "1", features = ["rt"], optional = true }
 # Servo engine deps
 servo = { git = "https://github.com/servo/servo", rev = "853fcf4fda0c31ab418c21eac4323d9e91d2b912", package = "libservo", optional = true }
 urlencoding = { version = "2", optional = true }
-
-# CEF engine deps
-cef = { version = "145", default-features = false, optional = true }
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws_lc_rs"], optional = true }
 euclid = { version = "0.22", optional = true }
 keyboard-types-servo = { package = "keyboard-types", version = "0.8", optional = true }
 dpi = { version = "0.1", optional = true }
+
+# CEF engine deps
+cef = { version = "145", default-features = false, optional = true }
 
 # When both blitz and servo features are resolved, Cargo sees two copies of
 # stylo (crates.io for blitz, git for servo). Patch crates.io to use servo's

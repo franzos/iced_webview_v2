@@ -8,7 +8,7 @@ A library to embed Web views in iced applications
 This library supports
 - [Blitz] — Rust-native HTML/CSS renderer (Stylo + Taffy + Vello), modern CSS (flexbox, grid), no JS
 - [litehtml] — lightweight CPU-based HTML/CSS rendering, no JS or navigation (good for static content like emails)
-- [Servo] — full browser engine (HTML5, CSS3, JS via SpiderMonkey), rendered to CPU buffer for embedding
+- [Servo] — full browser engine (HTML5, CSS3, JS via SpiderMonkey), rendered to CPU buffer, displayed via iced shader widget
 - [CEF] — Chromium Embedded Framework via cef-rs, full Chromium browser compat (HTML5, CSS3, JS)
 
 | Blitz | litehtml | Servo | CEF |
@@ -21,6 +21,113 @@ This library supports
 |------|--------------|
 | 0.14 | 0.0.9+       |
 | 0.13 | 0.0.5        |
+
+## Usage
+
+Add to your `Cargo.toml` (the library pulls in iced internally, but your app will need it too):
+
+```toml
+[dependencies]
+iced_webview_v2 = "0.1"
+iced = { version = "0.14", features = ["advanced", "image", "tokio", "lazy"] }
+```
+
+The default engine is `litehtml`. To use a different one, disable defaults and pick one:
+
+```toml
+iced_webview_v2 = { version = "0.1", default-features = false, features = ["blitz"] }  # or "servo", "cef"
+```
+
+### Minimal example
+
+```rust
+use iced::{time, Element, Subscription, Task};
+use iced_webview::{Action, PageType, WebView};
+use std::time::Duration;
+
+type Engine = iced_webview::Litehtml; // or Blitz, Servo, Cef
+
+#[derive(Debug, Clone)]
+enum Message {
+    WebView(Action),
+    ViewCreated,
+}
+
+struct App {
+    webview: WebView<Engine, Message>,
+    ready: bool,
+}
+
+impl App {
+    fn new() -> (Self, Task<Message>) {
+        let webview = WebView::new()
+            .on_create_view(Message::ViewCreated)
+            .on_action(Message::WebView);
+        (
+            Self {
+                webview,
+                ready: false,
+            },
+            Task::done(Message::WebView(Action::CreateView(PageType::Url(
+                "https://example.com".to_string(),
+            )))),
+        )
+    }
+
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::WebView(action) => self.webview.update(action),
+            Message::ViewCreated => {
+                self.ready = true;
+                self.webview.update(Action::ChangeView(0))
+            }
+        }
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        if self.ready {
+            self.webview.view().map(Message::WebView)
+        } else {
+            iced::widget::text("Loading...").into()
+        }
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        // Drives rendering, image fetching, and engine state
+        time::every(Duration::from_millis(10))
+            .map(|_| Action::Update)
+            .map(Message::WebView)
+    }
+}
+
+fn main() -> iced::Result {
+    // CEF requires this at the top of main()
+    #[cfg(feature = "cef")]
+    if iced_webview::cef_subprocess_check() {
+        return Ok(());
+    }
+
+    iced::application(App::new, App::update, App::view)
+        .title("Webview")
+        .subscription(App::subscription)
+        .run()
+}
+```
+
+The periodic `Action::Update` subscription is required — it drives rendering, image fetching, and engine state. Use `PageType::Url` to load a URL, or `PageType::Html` to render a raw HTML string. Track navigation with `on_url_change` / `on_title_change`.
+
+### Basic vs Advanced WebView
+
+**Basic** (`iced_webview::WebView`) manages views with simple `u32` indexing — create with `Action::CreateView`, switch with `Action::ChangeView(index)`, render with `webview.view()`. Good for most use cases.
+
+**Advanced** (`iced_webview::advanced::WebView`) gives you explicit `ViewId` control. Every action and callback includes the `ViewId`, and you render a specific view with `webview.view(id)`. Use this for multi-view scenarios like a tabbed browser.
+
+### Rendering paths
+
+Handled transparently — `webview.view()` returns the right widget type based on the engine feature — but worth knowing about:
+
+- **Image Handle** (Blitz, litehtml) — the engine rasterizes to a CPU pixel buffer, displayed via iced's `image::Handle`. Simple, works everywhere.
+- **Shader widget** (Servo, CEF) — uses iced's `shader` widget with a persistent GPU texture updated in-place via `queue.write_texture()`. Avoids texture cache churn and flickering during rapid updates like scrolling.
 
 ## Requirements
 
@@ -75,7 +182,7 @@ Renders a table-based marketing email — works with any engine, but designed to
 ```sh
 cargo run --example email --no-default-features --features litehtml
 # or with blitz
-cargo run --example email
+cargo run --example email --no-default-features --features blitz
 # or with servo
 cargo run --example email --no-default-features --features servo
 # or with cef
@@ -107,9 +214,9 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 - **Git-only dependency** — `libservo` is not on crates.io, so the `servo` feature cannot be published. Build from git only.
 - **Large binary** — adds 50-150+ MB to the final binary due to SpiderMonkey and Servo's full rendering pipeline.
 - **System deps** — needs `fontconfig`, `make`, `cmake`, `clang` (recent version), and `nasm` at build time.
-- **No text selection** — not yet wired up through the embedding API.
+- **Text selection** — Servo manages text selection and clipboard (Ctrl+C/V) internally, but the selection is not queryable from the embedding API (`get_selected_text()` returns None).
 - **Intermittent SpiderMonkey crashes** — servo's JS engine can segfault during script execution on certain pages (`JS::GetScriptPrivate`). This is an upstream servo/SpiderMonkey issue, not specific to the embedding. Pages with heavy JS are more likely to trigger it.
-- **Rendering** — uses iced's `shader` widget with a persistent GPU texture updated in-place via `queue.write_texture()` each frame. This avoids the texture cache churn (and visible flickering) that would otherwise occur with iced's image Handle path during rapid frame updates like scrolling.
+- **Rendering** — Servo software-renders to a CPU buffer, which is then uploaded to a persistent GPU texture via `queue.write_texture()` and displayed through iced's `shader` widget. The texture is only updated when Servo signals a new frame. This avoids the texture cache churn (and visible flickering) that would otherwise occur with iced's image Handle path during rapid frame updates like scrolling.
 
 ### CEF
 
@@ -117,14 +224,14 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 - **Large runtime** — ships ~200-300 MB of Chromium binaries alongside your application.
 - **Not Rust-native** — C++ under the hood, Rust bindings via [cef-rs](https://github.com/tauri-apps/cef-rs).
 - **CEF binary download** — the `cef-dll-sys` build script downloads the CEF binary distribution at build time.
-- **Rendering** — uses iced's `shader` widget with a persistent GPU texture updated in-place via `queue.write_texture()` each frame, same as Servo. This avoids the texture cache churn (and visible flickering) that would otherwise occur with iced's image Handle path.
+- **Rendering** — same as Servo: CPU buffer uploaded to a persistent GPU texture via `queue.write_texture()`, displayed through iced's `shader` widget. Only updated when CEF delivers a new frame via its `on_paint` callback.
 
 ## TODO
 
 - **Blitz incremental layout** — `blitz-dom` has a feature-gated `incremental` flag that enables selective cache clearing and damage propagation in `resolve()`. Currently experimental (incomplete FC root detection, no tests), but once stabilized it would make re-layout after hover/resource loads much cheaper by only updating affected subtrees instead of the full tree.
 - **`:hover` CSS rendering** — both engines skip the visual re-render for hover styles. With incremental layout + viewport-only rendering, it may become cheap enough to re-enable for Blitz.
 - **Async rendering** — rendering currently blocks the main thread. Moving the `paint_scene` + `render_to_buffer` call to a background thread would keep the UI responsive during re-renders.
-- **Servo text selection** — wire up Servo's text selection API through the engine trait.
+- **Servo/CEF text selection API** — expose the engine-managed selected text through `get_selected_text()` so the embedding can query it.
 - **Blitz keyboard input** — wire iced keyboard events through to `HtmlDocument::handle_ui_event` as `UiEvent::KeyDown`/`KeyUp`, enabling text input in `<input>`/`<textarea>` elements.
 
 ## Engine Comparison
@@ -136,7 +243,7 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 | **Table layout** | Yes | Yes | Yes | Yes |
 | **JavaScript** | No | No | Yes (SpiderMonkey) | Yes (V8) |
 | **Keyboard input** | Supported in blitz-dom, not yet wired | No | Yes | Yes |
-| **Text selection** | No (not yet in blitz-dom) | Yes | No (not yet wired) | Yes (Chromium-managed) |
+| **Text selection** | Supported in blitz-dom, not yet wired | Yes | Yes (engine-managed, not queryable from API) | Yes (Chromium-managed, not queryable from API) |
 | **`:hover` CSS styles** | Tracked, not rendered (CPU cost) | Tracked, not rendered | Yes | Yes |
 | **Cursor changes** | Yes | Yes | Yes | Yes |
 | **Link navigation** | Yes | Yes | Yes | Yes |
@@ -149,7 +256,7 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 | **Build deps** | Pure Rust | C++ (`clang`/`libclang`) | Rust + system deps (git-only) | C++ (CEF binary download) |
 | **Rendering performance** | Low (Stylo + Vello CPU, needs `--release`) | Moderate | Best (full rendering pipeline) | Best (full Chromium pipeline) |
 | **Binary size impact** | Moderate | Small | Large (50-150+ MB) | Large (~200-300 MB runtime) |
-| **License** | MIT/Apache-2.0 + MPL-2.0 (Stylo) | BSD | MPL-2.0 | MIT/Apache-2.0 (bindings) + BSD (CEF) |
+| **License** | MIT/Apache-2.0 + MPL-2.0 (Stylo) | MIT + BSD-3-Clause | MPL-2.0 | Apache-2.0 (this crate) + BSD (CEF) |
 
 [Blitz]: https://github.com/DioxusLabs/blitz
 [litehtml]: https://github.com/franzos/litehtml-rs
