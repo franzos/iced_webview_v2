@@ -14,8 +14,8 @@ use litehtml::pixbuf::PixbufContainer;
 use litehtml::selection::Selection;
 use litehtml::{
     css_escape_ident, BackgroundLayer, BorderRadiuses, Borders, Color, ConicGradient, Document,
-    DocumentContainer, FontDescription, FontMetrics, LinearGradient, ListMarker, MediaFeatures,
-    Position, RadialGradient, TextTransform,
+    DocumentContainer, DrawContext, FontDescription, FontHandle, FontMetrics, LinearGradient,
+    ListMarker, MediaFeatures, Position, RadialGradient, TextTransform,
 };
 
 /// Wrapper around `PixbufContainer` that handles CSS import resolution
@@ -78,19 +78,19 @@ impl WebviewContainer {
 
 // Delegate everything to inner, override import_css, set_base_url, load_image
 impl DocumentContainer for WebviewContainer {
-    fn create_font(&mut self, descr: &FontDescription) -> (usize, FontMetrics) {
+    fn create_font(&mut self, descr: &FontDescription) -> (FontHandle, FontMetrics) {
         self.inner.create_font(descr)
     }
-    fn delete_font(&mut self, font: usize) {
+    fn delete_font(&mut self, font: FontHandle) {
         self.inner.delete_font(font);
     }
-    fn text_width(&self, text: &str, font: usize) -> f32 {
+    fn text_width(&self, text: &str, font: FontHandle) -> f32 {
         self.inner.text_width(text, font)
     }
-    fn draw_text(&mut self, hdc: usize, text: &str, font: usize, color: Color, pos: Position) {
+    fn draw_text(&mut self, hdc: DrawContext, text: &str, font: FontHandle, color: Color, pos: Position) {
         self.inner.draw_text(hdc, text, font, color, pos);
     }
-    fn draw_list_marker(&mut self, hdc: usize, marker: &ListMarker) {
+    fn draw_list_marker(&mut self, hdc: DrawContext, marker: &ListMarker) {
         self.inner.draw_list_marker(hdc, marker);
     }
     fn load_image(&mut self, src: &str, baseurl: &str, redraw_on_ready: bool) {
@@ -105,15 +105,15 @@ impl DocumentContainer for WebviewContainer {
     fn get_image_size(&self, src: &str, baseurl: &str) -> litehtml::Size {
         self.inner.get_image_size(src, baseurl)
     }
-    fn draw_image(&mut self, hdc: usize, layer: &BackgroundLayer, url: &str, base_url: &str) {
+    fn draw_image(&mut self, hdc: DrawContext, layer: &BackgroundLayer, url: &str, base_url: &str) {
         self.inner.draw_image(hdc, layer, url, base_url);
     }
-    fn draw_solid_fill(&mut self, hdc: usize, layer: &BackgroundLayer, color: Color) {
+    fn draw_solid_fill(&mut self, hdc: DrawContext, layer: &BackgroundLayer, color: Color) {
         self.inner.draw_solid_fill(hdc, layer, color);
     }
     fn draw_linear_gradient(
         &mut self,
-        hdc: usize,
+        hdc: DrawContext,
         layer: &BackgroundLayer,
         gradient: &LinearGradient,
     ) {
@@ -121,7 +121,7 @@ impl DocumentContainer for WebviewContainer {
     }
     fn draw_radial_gradient(
         &mut self,
-        hdc: usize,
+        hdc: DrawContext,
         layer: &BackgroundLayer,
         gradient: &RadialGradient,
     ) {
@@ -129,13 +129,13 @@ impl DocumentContainer for WebviewContainer {
     }
     fn draw_conic_gradient(
         &mut self,
-        hdc: usize,
+        hdc: DrawContext,
         layer: &BackgroundLayer,
         gradient: &ConicGradient,
     ) {
         self.inner.draw_conic_gradient(hdc, layer, gradient);
     }
-    fn draw_borders(&mut self, hdc: usize, borders: &Borders, draw_pos: Position, root: bool) {
+    fn draw_borders(&mut self, hdc: DrawContext, borders: &Borders, draw_pos: Position, root: bool) {
         self.inner.draw_borders(hdc, borders, draw_pos, root);
     }
     fn set_caption(&mut self, caption: &str) {
@@ -196,7 +196,7 @@ impl DocumentContainer for WebviewContainer {
 /// to the container data exists at a time.
 struct DocumentState {
     doc: Document<'static>,
-    measure: Box<dyn Fn(&str, usize) -> f32>,
+    measure: Box<dyn Fn(&str, FontHandle) -> f32>,
     selection: Selection<'static>,
 }
 
@@ -390,7 +390,7 @@ fn capture_frame(view: &mut LitehtmlView) {
             width: w as f32,
             height: full_h as f32,
         };
-        ds.doc.draw(0, 0.0, 0.0, Some(clip));
+        ds.doc.draw(DrawContext(0), 0.0, 0.0, Some(clip));
     }
 
     // Take doc_state out again to safely access the container.
