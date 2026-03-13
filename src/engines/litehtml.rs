@@ -815,7 +815,8 @@ impl Engine for Litehtml {
     }
 
     fn get_content_height(&self, id: ViewId) -> f32 {
-        self.find_view(id).content_height
+        let view = self.find_view(id);
+        view.content_height.max(view.size.height as f32)
     }
 
     fn get_selected_text(&self, id: ViewId) -> Option<String> {
