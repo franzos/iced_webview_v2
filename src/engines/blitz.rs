@@ -203,6 +203,17 @@ fn render_view(view: &mut BlitzView) {
         render_h,
     );
 
+    // Only swap the frame when pixels actually changed. This prevents
+    // visual flicker during the resource drain phase when resolve() is
+    // called periodically but no new resources have arrived yet.
+    if view.last_frame.image_width() == render_w
+        && view.last_frame.image_height() == render_h
+        && *view.last_frame.pixels() == buffer
+    {
+        view.needs_render = false;
+        return;
+    }
+
     view.last_frame = ImageInfo::new(buffer, PixelFormat::Rgba, render_w, render_h);
     view.needs_render = false;
 }
@@ -211,17 +222,16 @@ fn render_view(view: &mut BlitzView) {
 /// At 10ms per tick this gives ~30s for sub-resources to arrive.
 const RESOURCE_TICK_BUDGET: u32 = 3000;
 
-/// Drain completed resource fetches and re-resolve if something changed.
-/// Only called while `resource_ticks > 0` (after a goto).
-fn drain_and_resolve(view: &mut BlitzView) -> bool {
-    let doc = match view.document.as_mut() {
-        Some(d) => d,
-        None => return false,
-    };
-    let height_before = doc.root_element().final_layout.size.height;
-    doc.resolve(0.0);
-    let height_after = doc.root_element().final_layout.size.height;
-    height_before != height_after
+/// How often (in ticks) to actually call resolve() during the drain phase.
+/// resolve() is expensive (full Stylo + Taffy layout pass), so we throttle it.
+/// At ~10ms per tick, 100 ticks ≈ 1 second between resolve calls.
+const RESOLVE_INTERVAL: u32 = 100;
+
+/// Drain completed resource fetches and re-resolve the document.
+fn drain_and_resolve(view: &mut BlitzView) {
+    if let Some(ref mut doc) = view.document {
+        doc.resolve(0.0);
+    }
 }
 
 impl Engine for Blitz {
@@ -239,7 +249,8 @@ impl Engine for Blitz {
         for view in &mut self.views {
             if view.resource_ticks > 0 {
                 view.resource_ticks -= 1;
-                if drain_and_resolve(view) {
+                if view.resource_ticks % RESOLVE_INTERVAL == 0 {
+                    drain_and_resolve(view);
                     view.needs_render = true;
                 }
             }
@@ -398,9 +409,9 @@ impl Engine for Blitz {
                             page_x: point.x,
                             page_y: doc_y,
                             screen_x: point.x,
-                            screen_y: doc_y,
+                            screen_y: point.y,
                             client_x: point.x,
-                            client_y: doc_y,
+                            client_y: point.y,
                         },
                         button: MouseEventButton::Main,
                         buttons: MouseEventButtons::Primary,
@@ -415,9 +426,6 @@ impl Engine for Blitz {
                     let doc_y = point.y + view.scroll_y;
                     doc.set_hover_to(point.x, doc_y);
                 }
-                // Update cursor icon without re-rendering — matching litehtml
-                // behaviour. A full re-render for :hover CSS would be too
-                // expensive with CPU rasterization.
                 let doc_cursor = view.document.as_ref().and_then(|d| d.get_cursor());
                 let shell_cursor = *view.cursor_icon.lock().unwrap();
                 let icon = doc_cursor.unwrap_or(shell_cursor);
@@ -434,9 +442,9 @@ impl Engine for Blitz {
                             page_x: point.x,
                             page_y: doc_y,
                             screen_x: point.x,
-                            screen_y: doc_y,
+                            screen_y: point.y,
                             client_x: point.x,
-                            client_y: doc_y,
+                            client_y: point.y,
                         },
                         button: MouseEventButton::Main,
                         buttons: MouseEventButtons::None,
@@ -530,6 +538,33 @@ impl Engine for Blitz {
 
     fn get_content_height(&self, id: ViewId) -> f32 {
         self.find_view(id).content_height
+    }
+
+    fn scroll_to_fragment(&mut self, id: ViewId, fragment: &str) -> bool {
+        let view = self.find_view_mut(id);
+        let doc = match view.document.as_ref() {
+            Some(d) => d,
+            None => return false,
+        };
+
+        // Try #id first (fast HashMap lookup), then [name="fragment"] via CSS selector.
+        let node_id = doc.get_element_by_id(fragment).or_else(|| {
+            let quoted = fragment.replace('\\', "\\\\").replace('"', "\\\"");
+            doc.query_selector(&format!("[name=\"{quoted}\"]"))
+                .ok()
+                .flatten()
+        });
+
+        if let Some(nid) = node_id {
+            if let Some(node) = doc.get_node(nid) {
+                let pos = node.absolute_position(0.0, 0.0);
+                let max_scroll = (view.content_height - view.size.height as f32).max(0.0);
+                view.scroll_y = pos.y.clamp(0.0, max_scroll);
+                return true;
+            }
+        }
+
+        false
     }
 
     fn take_anchor_click(&mut self, id: ViewId) -> Option<String> {
