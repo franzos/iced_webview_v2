@@ -211,6 +211,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 self.view_ids.remove(self.current_view_index.expect(
                     "The current view index is not currently set. Ensure you call the Action prior",
                 ));
+                self.current_view_index = None;
                 if let Some(on_view_close) = &self.on_close_view {
                     tasks.push(Task::done(on_view_close.clone()));
                 }
@@ -480,6 +481,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 self.engine.get_selection_rects(id),
                 self.engine.get_scroll_y(id),
                 content_height,
+                self.scale_factor,
             )
             .into()
         } else {
@@ -505,6 +507,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     self.engine.get_selection_rects(id),
                     0.0,
                     0.0,
+                    self.scale_factor,
                 )
                 .into()
             }
@@ -524,6 +527,7 @@ struct WebViewWidget<'a> {
     selection_rects: &'a [[f32; 4]],
     scroll_y: f32,
     content_height: f32,
+    scale_factor: f32,
 }
 
 impl<'a> WebViewWidget<'a> {
@@ -533,6 +537,7 @@ impl<'a> WebViewWidget<'a> {
         selection_rects: &'a [[f32; 4]],
         scroll_y: f32,
         content_height: f32,
+        scale_factor: f32,
     ) -> Self {
         Self {
             handle: image_info.as_handle(),
@@ -541,6 +546,7 @@ impl<'a> WebViewWidget<'a> {
             selection_rects,
             scroll_y,
             content_height,
+            scale_factor,
         }
     }
 }
@@ -579,14 +585,16 @@ where
         let bounds = layout.bounds();
 
         if self.content_height > 0.0 {
-            // Full-document buffer: draw at negative y offset to scroll,
-            // clipped to widget bounds. The Handle stays stable across frames.
+            // The pixel buffer is rendered at physical size (logical × scale_factor),
+            // so we must scale the draw rectangle to match, otherwise iced squishes
+            // the image to fit the smaller logical rectangle.
+            let s = self.scale_factor;
             renderer.with_layer(bounds, |renderer| {
                 let image_bounds = Rectangle {
                     x: bounds.x,
-                    y: bounds.y - self.scroll_y,
+                    y: bounds.y - self.scroll_y * s,
                     width: bounds.width,
-                    height: self.content_height,
+                    height: self.content_height * s,
                 };
                 renderer.draw_image(
                     core_image::Image::new(self.handle.clone()).snap(true),
