@@ -197,7 +197,7 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 
 - **No incremental rendering** — the entire visible viewport is re-rasterized on every frame that needs updating (scroll, resize, resource load). Blitz is pre-alpha and doesn't yet support dirty-rect or partial repaint like Firefox/Chrome.
 - **No `:hover` CSS rendering** — hover state is tracked internally (cursor changes work), but we skip the visual re-render for `:hover` styles to avoid the CPU cost. This matches litehtml's behaviour.
-- **No keyboard input** — blitz-dom supports keyboard events internally (text input, Tab navigation, copy/paste), but iced_webview does not wire iced keyboard events through to the Blitz document yet. The handler is a no-op.
+- **Keyboard input** — iced keyboard events are wired through to blitz-dom (text input, Tab navigation, arrow keys, copy/paste). Dark mode is detected from `ICED_WEBVIEW_COLOR_SCHEME` env var or GTK theme.
 - **No JavaScript** — by design; Blitz is a CSS rendering engine, not a browser engine.
 - **Image/CSS fetching is internal** — Blitz uses `blitz_net::Provider` to fetch sub-resources (images, CSS `@import`) automatically. It does not participate in the widget layer's manual image pipeline (`take_pending_images`/`load_image_from_bytes`). The widget layer fetches the initial HTML page for URL navigation, but all sub-resource loading is handled by Blitz internally.
 - **Build weight** — Stylo (Firefox's CSS engine) adds significant compile time on first build.
@@ -232,7 +232,6 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 - **`:hover` CSS rendering** — both engines skip the visual re-render for hover styles. With incremental layout + viewport-only rendering, it may become cheap enough to re-enable for Blitz.
 - **Async rendering** — rendering currently blocks the main thread. Moving the `paint_scene` + `render_to_buffer` call to a background thread would keep the UI responsive during re-renders.
 - **Servo/CEF text selection API** — expose the engine-managed selected text through `get_selected_text()` so the embedding can query it.
-- **Blitz keyboard input** — wire iced keyboard events through to `HtmlDocument::handle_ui_event` as `UiEvent::KeyDown`/`KeyUp`, enabling text input in `<input>`/`<textarea>` elements.
 
 ## Engine Comparison
 
@@ -242,7 +241,7 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 | **CSS variables** | Yes | No | Yes | Yes |
 | **Table layout** | Yes | Yes | Yes | Yes |
 | **JavaScript** | No | No | Yes (SpiderMonkey) | Yes (V8) |
-| **Keyboard input** | Supported in blitz-dom, not yet wired | No | Yes | Yes |
+| **Keyboard input** | Yes (wired to blitz-dom) | No | Yes | Yes |
 | **Text selection** | Supported in blitz-dom, not yet wired | Yes | Yes (engine-managed, not queryable from API) | Yes (Chromium-managed, not queryable from API) |
 | **`:hover` CSS styles** | Tracked, not rendered (CPU cost) | Tracked, not rendered | Yes | Yes |
 | **Cursor changes** | Yes | Yes | Yes | Yes |
