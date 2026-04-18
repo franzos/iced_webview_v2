@@ -51,14 +51,14 @@ litehtml = { version = "0.2.4", features = ["pixbuf", "html"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 url = "2.5.2"
 
-# Blitz engine deps (git: stylo 0.12, matching Servo)
-blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "05c9892932a3d03858f634d416606a376052e544", optional = true }
-blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "05c9892932a3d03858f634d416606a376052e544", optional = true }
-blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "05c9892932a3d03858f634d416606a376052e544", optional = true }
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "05c9892932a3d03858f634d416606a376052e544", optional = true }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "05c9892932a3d03858f634d416606a376052e544", optional = true }
-anyrender = { version = "0.7", optional = true }
-anyrender_vello_cpu = { version = "0.9", optional = true }
+# Blitz engine deps (git: stylo 0.15, matching Servo)
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
+anyrender = { version = "0.8", optional = true }
+anyrender_vello_cpu = { version = "0.10", optional = true }
 peniko = { version = "0.6", optional = true }
 cursor-icon = { version = "1", optional = true }
 keyboard-types = { version = "0.7", optional = true }
@@ -66,7 +66,7 @@ smol_str = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt"], optional = true }
 
 # Servo engine deps
-servo = { git = "https://github.com/servo/servo", rev = "401d327b96f6", package = "libservo", optional = true }
+servo = { version = "0.1", optional = true }
 urlencoding = { version = "2", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws_lc_rs"], optional = true }
 euclid = { version = "0.22", optional = true }
@@ -75,16 +75,6 @@ dpi = { version = "0.1", optional = true }
 
 # CEF engine deps
 cef = { version = "145", default-features = false, optional = true }
-
-# When both blitz and servo features are resolved, Cargo sees two copies of
-# stylo (crates.io for blitz, git for servo). Patch crates.io to use servo's
-# git rev so they resolve to a single copy.
-[patch.crates-io]
-stylo = { git = "https://github.com/servo/stylo", rev = "ab75cec2f1fdb1c6d5731b4c685a3bfc798f9619" }
-stylo_traits = { git = "https://github.com/servo/stylo", rev = "ab75cec2f1fdb1c6d5731b4c685a3bfc798f9619" }
-stylo_atoms = { git = "https://github.com/servo/stylo", rev = "ab75cec2f1fdb1c6d5731b4c685a3bfc798f9619" }
-stylo_dom = { git = "https://github.com/servo/stylo", rev = "ab75cec2f1fdb1c6d5731b4c685a3bfc798f9619" }
-selectors = { git = "https://github.com/servo/stylo", rev = "ab75cec2f1fdb1c6d5731b4c685a3bfc798f9619" }
 
 [[example]]
 name = "webview"
