@@ -588,6 +588,17 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     }
 }
 
+#[cfg(feature = "servo")]
+impl<Message: Send + Clone + 'static> WebView<crate::engines::servo::Servo, Message> {
+    /// Event-driven subscription for the Servo engine — yields
+    /// [`Action::Update`] whenever Servo wakes the embedder, with a 500ms
+    /// fallback tick. Use this in place of a hardcoded `time::every(...)`
+    /// timer when running with the `servo` feature.
+    pub fn subscription(&self) -> iced::Subscription<Action> {
+        self.engine.subscription()
+    }
+}
+
 struct WebViewWidget<'a> {
     handle: core_image::Handle,
     cursor: Interaction,

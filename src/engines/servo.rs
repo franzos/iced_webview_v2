@@ -1,9 +1,13 @@
 use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
 
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::{Point, Size};
+use tokio::sync::Notify;
 
 use super::{Engine, PageType, PixelFormat, ViewId, ViewManager};
 use crate::ImageInfo;
@@ -20,12 +24,35 @@ use servo::{
 };
 use url::Url;
 
-/// No-op waker — the iced subscription tick already drives `spin_event_loop`.
-struct NoOpWaker;
+/// Event-driven waker that Servo calls (from any thread) whenever it wants the
+/// embedder to spin its event loop. The `Notify` coalesces multiple wake signals
+/// into a single pending notification, so a burst of calls produces at most one
+/// wake-up on the consumer side.
+#[derive(Clone)]
+struct ServoWaker {
+    notify: Arc<Notify>,
+}
 
-impl servo::EventLoopWaker for NoOpWaker {
+impl servo::EventLoopWaker for ServoWaker {
     fn clone_box(&self) -> Box<dyn servo::EventLoopWaker> {
-        Box::new(NoOpWaker)
+        Box::new(self.clone())
+    }
+
+    fn wake(&self) {
+        self.notify.notify_one();
+    }
+}
+
+/// Hashable handle used to give the Servo wake subscription a stable identity
+/// in the iced runtime. Hashing the `Arc`'s pointer address is enough —
+/// each `Servo` instance has its own `Notify`, so two different engines get
+/// two distinct subscriptions.
+#[derive(Clone)]
+struct WakeSubId(Arc<Notify>);
+
+impl Hash for WakeSubId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (Arc::as_ptr(&self.0) as usize).hash(state);
     }
 }
 
@@ -92,6 +119,10 @@ pub struct Servo {
     rendering_context: Rc<SoftwareRenderingContext>,
     views: ViewManager<ServoView>,
     scale_factor: f32,
+    /// Shared with `ServoWaker` — Servo signals this whenever it wants the
+    /// embedder to call `spin_event_loop`. The iced subscription exposed by
+    /// [`Servo::subscription`] awaits the same handle.
+    notify: Arc<Notify>,
 }
 
 impl Default for Servo {
@@ -101,8 +132,13 @@ impl Default for Servo {
             SoftwareRenderingContext::new(size).expect("failed to create SoftwareRenderingContext");
         let rendering_context = Rc::new(rendering_context);
 
+        let notify = Arc::new(Notify::new());
+        let waker = ServoWaker {
+            notify: Arc::clone(&notify),
+        };
+
         let instance = ServoBuilder::default()
-            .event_loop_waker(Box::new(NoOpWaker))
+            .event_loop_waker(Box::new(waker))
             .build();
 
         Self {
@@ -110,7 +146,35 @@ impl Default for Servo {
             rendering_context,
             views: ViewManager::default(),
             scale_factor: 1.0,
+            notify,
         }
+    }
+}
+
+impl Servo {
+    /// An iced [`Subscription`] that yields [`Action::Update`] whenever Servo
+    /// signals it has work to do, plus a 500ms safety tick so the event loop
+    /// still runs if a wake is somehow missed. This replaces the hardcoded
+    /// `time::every(10ms)` pattern used for other engines.
+    ///
+    /// [`Subscription`]: iced::Subscription
+    /// [`Action::Update`]: crate::Action::Update
+    pub fn subscription(&self) -> iced::Subscription<crate::Action> {
+        use iced::futures::SinkExt;
+
+        let id = WakeSubId(Arc::clone(&self.notify));
+
+        let wake_stream = iced::Subscription::run_with(id, |id| {
+            let notify = Arc::clone(&id.0);
+            iced::stream::channel(1, async move |mut output| loop {
+                notify.notified().await;
+                let _ = output.send(crate::Action::Update).await;
+            })
+        });
+
+        let fallback = iced::time::every(Duration::from_millis(500)).map(|_| crate::Action::Update);
+
+        iced::Subscription::batch([wake_stream, fallback])
     }
 }
 

@@ -1,9 +1,12 @@
 use iced::{
-    time,
     widget::{button, column, container, row, text},
     Element, Length, Subscription, Task,
 };
 use iced_webview::{Action, PageType, WebView};
+
+#[cfg(not(feature = "servo"))]
+use iced::time;
+#[cfg(not(feature = "servo"))]
 use std::time::Duration;
 
 #[cfg(feature = "cef")]
@@ -137,8 +140,15 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        time::every(Duration::from_millis(10))
-            .map(|_| Action::Update)
-            .map(Message::WebView)
+        #[cfg(feature = "servo")]
+        {
+            self.webview.subscription().map(Message::WebView)
+        }
+        #[cfg(not(feature = "servo"))]
+        {
+            time::every(Duration::from_millis(10))
+                .map(|_| Action::Update)
+                .map(Message::WebView)
+        }
     }
 }

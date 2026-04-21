@@ -1,6 +1,6 @@
 [package]
 name = "iced_webview_v2"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 rust-version = "1.90.0"
 description = "An easily embedded webview library for iced"
@@ -40,7 +40,7 @@ blitz = [
     "dep:tokio",
 ]
 litehtml = ["dep:litehtml", "dep:reqwest"]
-servo = ["dep:servo", "dep:urlencoding", "dep:rustls", "dep:euclid", "dep:keyboard-types-servo", "dep:dpi"]
+servo = ["dep:servo", "dep:urlencoding", "dep:rustls", "dep:euclid", "dep:keyboard-types-servo", "dep:dpi", "dep:tokio"]
 cef = ["dep:cef", "dep:urlencoding"]
 docs_only = []
 
@@ -63,7 +63,7 @@ peniko = { version = "0.6", optional = true }
 cursor-icon = { version = "1", optional = true }
 keyboard-types = { version = "0.7", optional = true }
 smol_str = { version = "0.3", optional = true }
-tokio = { version = "1", features = ["rt"], optional = true }
+tokio = { version = "1", features = ["rt", "sync"], optional = true }
 
 # Servo engine deps
 servo = { version = "0.1", optional = true }

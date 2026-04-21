@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.7] - 2026-04-21
+
+### Added
+- Servo engine: event-driven wake subscription via `webview.subscription()` — replaces hardcoded `time::every(...)` polling
+- `ServoWaker` signals the embedder only when Servo has work, with a 500ms fallback tick as a safety net
+- Examples updated to use the new Servo subscription when the `servo` feature is enabled
+
+### Changed
+- `servo` feature now depends on `tokio`; `tokio` dependency gains the `sync` feature for `Notify`
+
 ## [0.1.6] - 2026-04-03
 
 ### Added
