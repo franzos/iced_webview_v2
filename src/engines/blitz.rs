@@ -1,22 +1,23 @@
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::mem;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::{Point, Size};
 
-use super::{Engine, PageType, PixelFormat, ViewId, ViewManager};
+use super::{Engine, PageType, ViewId, ViewManager};
 use crate::ImageInfo;
 
-use anyrender::render_to_buffer;
-use anyrender_vello_cpu::VelloCpuImageRenderer;
+use anyrender::ImageRenderer;
+use anyrender_vello::VelloImageRenderer;
 use blitz_dom::{Document, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
 use blitz_paint::paint_scene;
 use blitz_traits::events::{
-    BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, KeyState, MouseEventButton,
-    MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
+    BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, BlitzWheelEvent, KeyState,
+    MouseEventButton, MouseEventButtons, PointerCoords, PointerDetails, UiEvent,
 };
 use blitz_traits::navigation::{NavigationOptions, NavigationProvider};
 use blitz_traits::net::NetProvider;
@@ -34,14 +35,19 @@ impl NavigationProvider for LinkCapture {
     }
 }
 
-/// Shell provider that tracks cursor and redraw requests.
+/// Shell provider that tracks cursor changes and redraw requests from Blitz.
 struct WebviewShell {
     cursor: Arc<Mutex<CursorIcon>>,
+    redraw_requested: Arc<AtomicBool>,
 }
 
 impl ShellProvider for WebviewShell {
     fn set_cursor(&self, icon: CursorIcon) {
         *self.cursor.lock().unwrap() = icon;
+    }
+
+    fn request_redraw(&self) {
+        self.redraw_requested.store(true, Ordering::Release);
     }
 }
 
@@ -50,31 +56,34 @@ struct BlitzView {
     net_provider: Arc<dyn NetProvider>,
     nav_capture: Arc<Mutex<Option<String>>>,
     cursor_icon: Arc<Mutex<CursorIcon>>,
+    redraw_requested: Arc<AtomicBool>,
     url: String,
     title: String,
     cursor: Interaction,
     last_frame: ImageInfo,
-    last_frame_hash: u64,
     needs_render: bool,
+    /// Tracked across CursorMoved events so PointerMove dispatches carry
+    /// accurate button state — Blitz uses it to detect drag-selection.
+    mouse_buttons: MouseEventButtons,
     /// Number of update ticks to keep draining resources after goto().
     /// blitz_net fetches sub-resources (images, CSS) asynchronously; we need
     /// to call resolve() periodically to pick them up. Once the budget runs
     /// out we stop polling (resolve is expensive for large documents).
     resource_ticks: u32,
-    scroll_y: f32,
-    content_height: f32,
     size: Size<u32>,
     scale: f32,
 }
 
-/// CPU-based HTML rendering engine backed by Blitz (Stylo + Taffy + Vello).
+/// HTML rendering engine backed by Blitz (Stylo + Taffy + Vello).
 ///
 /// Supports modern CSS (flexbox, grid, Firefox CSS engine via Stylo),
-/// but no JavaScript. Uses `anyrender_vello_cpu` for software rasterization.
+/// but no JavaScript. Rasterizes on the GPU via `anyrender_vello` and
+/// displays through iced's shader widget.
 pub struct Blitz {
     views: ViewManager<BlitzView>,
     scale_factor: f32,
     color_scheme: ColorScheme,
+    gpu: GpuRasterizer,
 }
 
 fn detect_color_scheme() -> ColorScheme {
@@ -98,6 +107,7 @@ impl Default for Blitz {
             views: ViewManager::default(),
             scale_factor: 1.0,
             color_scheme: detect_color_scheme(),
+            gpu: GpuRasterizer::new(),
         }
     }
 }
@@ -125,6 +135,7 @@ fn new_net_provider() -> Arc<dyn NetProvider> {
 }
 
 /// Parse HTML into a Blitz document with the given configuration.
+#[allow(clippy::too_many_arguments)]
 fn create_document(
     html: &str,
     base_url: &str,
@@ -156,23 +167,45 @@ fn create_document(
     doc
 }
 
-/// Max render height in logical pixels. Prevents multi-hundred-MB pixel
-/// buffers for very tall documents (e.g. docs.rs pages). Content beyond
-/// this height is reachable via scrolling but not pre-rasterized.
-const MAX_RENDER_HEIGHT: f32 = 8192.0;
-
-/// Render the document to an RGBA pixel buffer.
+/// Persistent GPU rasterizer shared across all views.
 ///
-/// The buffer height is capped at `MAX_RENDER_HEIGHT` logical pixels to
-/// keep memory and CPU usage bounded. The widget layer uses `content_height`
-/// / `scroll_y` for scroll calculations; `content_height` is clamped to the
-/// rendered height so the scrollbar range matches what's actually rasterized.
-fn render_view(view: &mut BlitzView) {
+/// Building a `VelloImageRenderer` triggers full wgpu init plus Vello
+/// pipeline compilation (hundreds of ms), so we keep one alive and resize
+/// it on demand instead of constructing per-frame.
+struct GpuRasterizer {
+    renderer: Option<VelloImageRenderer>,
+    size: (u32, u32),
+    buffer: Vec<u8>,
+}
+
+impl GpuRasterizer {
+    fn new() -> Self {
+        Self {
+            renderer: None,
+            size: (0, 0),
+            buffer: Vec::new(),
+        }
+    }
+}
+
+/// Render the visible viewport to an RGBA pixel buffer.
+///
+/// Only the viewport-sized region is rasterized — `paint_scene` reads
+/// `doc.viewport_scroll()` and offsets content accordingly, so scrolling
+/// is owned by Blitz and the texture stays bounded by window size.
+fn render_view(view: &mut BlitzView, gpu: &mut GpuRasterizer) {
     let w = view.size.width;
     let h = view.size.height;
 
     if w == 0 || h == 0 {
         return;
+    }
+
+    // Apply pending style/layout invalidation (e.g. :hover changes from
+    // recent pointer events) before painting. Without this, hover styles
+    // wouldn't appear until the next periodic resource resolve tick.
+    if let Some(ref mut doc) = view.document {
+        doc.resolve(0.0);
     }
 
     let doc = match view.document.as_ref() {
@@ -184,13 +217,9 @@ fn render_view(view: &mut BlitzView) {
         }
     };
 
-    let root_height = doc.root_element().final_layout.size.height;
-    let capped_height = root_height.min(MAX_RENDER_HEIGHT);
-    view.content_height = capped_height;
-
     let scale = view.scale as f64;
     let render_w = (w as f64 * scale) as u32;
-    let render_h = ((capped_height as f64).max(h as f64) * scale) as u32;
+    let render_h = (h as f64 * scale) as u32;
 
     if render_w == 0 || render_h == 0 {
         view.last_frame = ImageInfo::blank(w, h);
@@ -198,28 +227,30 @@ fn render_view(view: &mut BlitzView) {
         return;
     }
 
-    let buffer = render_to_buffer::<VelloCpuImageRenderer, _>(
+    let renderer = gpu
+        .renderer
+        .get_or_insert_with(|| VelloImageRenderer::new(render_w, render_h));
+
+    if gpu.size != (render_w, render_h) {
+        renderer.resize(render_w, render_h);
+        gpu.size = (render_w, render_h);
+    }
+
+    let expected = (render_w as usize) * (render_h as usize) * 4;
+    gpu.buffer.resize(expected, 0);
+
+    renderer.render(
         |scene| {
             paint_scene(scene, doc, scale, render_w, render_h, 0, 0);
         },
-        render_w,
-        render_h,
+        &mut gpu.buffer,
     );
 
-    let mut hasher = DefaultHasher::new();
-    buffer.hash(&mut hasher);
-    let new_hash = hasher.finish();
-
-    if view.last_frame.image_width() == render_w
-        && view.last_frame.image_height() == render_h
-        && view.last_frame_hash == new_hash
-    {
-        view.needs_render = false;
-        return;
-    }
-
-    view.last_frame = ImageInfo::new(buffer, PixelFormat::Rgba, render_w, render_h);
-    view.last_frame_hash = new_hash;
+    // Hand the buffer to ImageInfo by move; next frame re-allocates via
+    // `resize`. Avoids a viewport-sized clone here, and from_shader_pixels
+    // avoids the parallel image::Handle clone.
+    let pixels = mem::take(&mut gpu.buffer);
+    view.last_frame = ImageInfo::from_shader_pixels(pixels, render_w, render_h);
     view.needs_render = false;
 }
 
@@ -252,6 +283,11 @@ impl Engine for Blitz {
 
     fn update(&mut self) {
         for view in self.views.values_mut() {
+            // Pick up Blitz's internal request_redraw signal (scroll, hover,
+            // resource arrival, IME, etc.) and convert it to a render request.
+            if view.redraw_requested.swap(false, Ordering::AcqRel) {
+                view.needs_render = true;
+            }
             if view.resource_ticks > 0 {
                 view.resource_ticks -= 1;
                 if view.resource_ticks % RESOLVE_INTERVAL == 0 {
@@ -265,7 +301,7 @@ impl Engine for Blitz {
     fn render(&mut self, _size: Size<u32>) {
         for view in self.views.values_mut() {
             if view.needs_render {
-                render_view(view);
+                render_view(view, &mut self.gpu);
             }
         }
     }
@@ -275,7 +311,7 @@ impl Engine for Blitz {
             return;
         };
         if view.needs_render {
-            render_view(view);
+            render_view(view, &mut self.gpu);
         }
     }
 
@@ -286,10 +322,12 @@ impl Engine for Blitz {
 
         let nav_capture = Arc::new(Mutex::new(None));
         let cursor_icon = Arc::new(Mutex::new(CursorIcon::Default));
+        let redraw_requested = Arc::new(AtomicBool::new(false));
         let net = new_net_provider();
         let nav = Arc::new(LinkCapture(Arc::clone(&nav_capture)));
         let shell = Arc::new(WebviewShell {
             cursor: Arc::clone(&cursor_icon),
+            redraw_requested: Arc::clone(&redraw_requested),
         });
 
         let (html, url) = match &content {
@@ -319,24 +357,23 @@ impl Engine for Blitz {
             net_provider: net,
             nav_capture,
             cursor_icon,
+            redraw_requested,
             url,
             title: String::new(),
             cursor: Interaction::Idle,
             last_frame: ImageInfo::blank(w, h),
-            last_frame_hash: 0,
             needs_render: true,
+            mouse_buttons: MouseEventButtons::None,
             resource_ticks: if has_document {
                 RESOURCE_TICK_BUDGET
             } else {
                 0
             },
-            scroll_y: 0.0,
-            content_height: 0.0,
             size,
             scale: self.scale_factor,
         };
 
-        render_view(&mut view);
+        render_view(&mut view, &mut self.gpu);
         self.views.insert(view)
     }
 
@@ -414,7 +451,7 @@ impl Engine for Blitz {
                 self.scroll(id, delta);
             }
             mouse::Event::ButtonPressed(btn) => {
-                let (button, buttons) = match btn {
+                let (button, mask) = match btn {
                     mouse::Button::Left => (MouseEventButton::Main, MouseEventButtons::Primary),
                     mouse::Button::Right => {
                         (MouseEventButton::Secondary, MouseEventButtons::Secondary)
@@ -429,8 +466,10 @@ impl Engine for Blitz {
                 let Some(view) = self.views.get_mut(id) else {
                     return;
                 };
+                view.mouse_buttons |= mask;
+                let buttons = view.mouse_buttons;
                 if let Some(ref mut doc) = view.document {
-                    let doc_y = point.y + view.scroll_y;
+                    let doc_y = point.y + doc.viewport_scroll().y as f32;
                     doc.handle_ui_event(UiEvent::PointerDown(BlitzPointerEvent {
                         id: BlitzPointerId::Mouse,
                         is_primary: true,
@@ -453,9 +492,27 @@ impl Engine for Blitz {
                 let Some(view) = self.views.get_mut(id) else {
                     return;
                 };
+                let buttons = view.mouse_buttons;
                 if let Some(ref mut doc) = view.document {
-                    let doc_y = point.y + view.scroll_y;
-                    doc.set_hover_to(point.x, doc_y);
+                    let doc_y = point.y + doc.viewport_scroll().y as f32;
+                    // Dispatch as PointerMove (not direct set_hover_to) so
+                    // Blitz handles drag-selection logic when a button is held.
+                    doc.handle_ui_event(UiEvent::PointerMove(BlitzPointerEvent {
+                        id: BlitzPointerId::Mouse,
+                        is_primary: true,
+                        coords: PointerCoords {
+                            page_x: point.x,
+                            page_y: doc_y,
+                            screen_x: point.x,
+                            screen_y: point.y,
+                            client_x: point.x,
+                            client_y: point.y,
+                        },
+                        button: MouseEventButton::Main,
+                        buttons,
+                        mods: Modifiers::empty(),
+                        details: PointerDetails::default(),
+                    }));
                 }
                 let doc_cursor = view.document.as_ref().and_then(|d| d.get_cursor());
                 let shell_cursor = *view.cursor_icon.lock().unwrap();
@@ -463,19 +520,25 @@ impl Engine for Blitz {
                 view.cursor = cursor_icon_to_interaction(icon);
             }
             mouse::Event::ButtonReleased(btn) => {
-                let button = match btn {
-                    mouse::Button::Left => MouseEventButton::Main,
-                    mouse::Button::Right => MouseEventButton::Secondary,
-                    mouse::Button::Middle => MouseEventButton::Auxiliary,
-                    mouse::Button::Back => MouseEventButton::Fourth,
-                    mouse::Button::Forward => MouseEventButton::Fifth,
+                let (button, mask) = match btn {
+                    mouse::Button::Left => (MouseEventButton::Main, MouseEventButtons::Primary),
+                    mouse::Button::Right => {
+                        (MouseEventButton::Secondary, MouseEventButtons::Secondary)
+                    }
+                    mouse::Button::Middle => {
+                        (MouseEventButton::Auxiliary, MouseEventButtons::Auxiliary)
+                    }
+                    mouse::Button::Back => (MouseEventButton::Fourth, MouseEventButtons::Fourth),
+                    mouse::Button::Forward => (MouseEventButton::Fifth, MouseEventButtons::Fifth),
                     _ => return,
                 };
                 let Some(view) = self.views.get_mut(id) else {
                     return;
                 };
+                view.mouse_buttons.remove(mask);
+                let buttons = view.mouse_buttons;
                 if let Some(ref mut doc) = view.document {
-                    let doc_y = point.y + view.scroll_y;
+                    let doc_y = point.y + doc.viewport_scroll().y as f32;
                     doc.handle_ui_event(UiEvent::PointerUp(BlitzPointerEvent {
                         id: BlitzPointerId::Mouse,
                         is_primary: true,
@@ -488,7 +551,7 @@ impl Engine for Blitz {
                             client_y: point.y,
                         },
                         button,
-                        buttons: MouseEventButtons::None,
+                        buttons,
                         mods: Modifiers::empty(),
                         details: PointerDetails::default(),
                     }));
@@ -507,16 +570,32 @@ impl Engine for Blitz {
         let Some(view) = self.views.get_mut(id) else {
             return;
         };
-        match delta {
-            mouse::ScrollDelta::Lines { y, .. } => {
-                view.scroll_y -= y * 40.0;
+        let Some(ref mut doc) = view.document else {
+            return;
+        };
+
+        // iced and Blitz agree on sign: positive y = scroll up. Blitz
+        // clamps to the document bounds and calls request_redraw internally.
+        let delta = match delta {
+            mouse::ScrollDelta::Lines { x, y } => {
+                BlitzWheelDelta::Pixels(x as f64 * 40.0, y as f64 * 40.0)
             }
-            mouse::ScrollDelta::Pixels { y, .. } => {
-                view.scroll_y -= y;
-            }
-        }
-        let max_scroll = (view.content_height - view.size.height as f32).max(0.0);
-        view.scroll_y = view.scroll_y.clamp(0.0, max_scroll);
+            mouse::ScrollDelta::Pixels { x, y } => BlitzWheelDelta::Pixels(x as f64, y as f64),
+        };
+
+        doc.handle_ui_event(UiEvent::Wheel(BlitzWheelEvent {
+            delta,
+            coords: PointerCoords {
+                page_x: 0.0,
+                page_y: 0.0,
+                screen_x: 0.0,
+                screen_y: 0.0,
+                client_x: 0.0,
+                client_y: 0.0,
+            },
+            buttons: MouseEventButtons::None,
+            mods: Modifiers::empty(),
+        }));
     }
 
     fn goto(&mut self, id: ViewId, page_type: PageType) {
@@ -529,6 +608,7 @@ impl Engine for Blitz {
                 let nav = Arc::new(LinkCapture(Arc::clone(&view.nav_capture)));
                 let shell = Arc::new(WebviewShell {
                     cursor: Arc::clone(&view.cursor_icon),
+                    redraw_requested: Arc::clone(&view.redraw_requested),
                 });
                 let net = new_net_provider();
                 view.net_provider = Arc::clone(&net);
@@ -543,7 +623,6 @@ impl Engine for Blitz {
                     view.scale,
                     color_scheme,
                 ));
-                view.scroll_y = 0.0;
                 view.needs_render = true;
                 view.resource_ticks = RESOURCE_TICK_BUDGET;
             }
@@ -598,11 +677,17 @@ impl Engine for Blitz {
     }
 
     fn get_scroll_y(&self, id: ViewId) -> f32 {
-        self.views.get(id).map(|v| v.scroll_y).unwrap_or(0.0)
+        self.views
+            .get(id)
+            .and_then(|v| v.document.as_ref())
+            .map(|d| d.viewport_scroll().y as f32)
+            .unwrap_or(0.0)
     }
 
-    fn get_content_height(&self, id: ViewId) -> f32 {
-        self.views.get(id).map(|v| v.content_height).unwrap_or(0.0)
+    /// Returning 0 tells the widget layer the engine manages scrolling
+    /// itself, which routes the view through the shader widget.
+    fn get_content_height(&self, _id: ViewId) -> f32 {
+        0.0
     }
 
     fn scroll_to_fragment(&mut self, id: ViewId, fragment: &str) -> bool {
@@ -625,8 +710,14 @@ impl Engine for Blitz {
         if let Some(nid) = node_id {
             if let Some(node) = doc.get_node(nid) {
                 let pos = node.absolute_position(0.0, 0.0);
-                let max_scroll = (view.content_height - view.size.height as f32).max(0.0);
-                view.scroll_y = pos.y.clamp(0.0, max_scroll);
+                let target_y = pos.y.max(0.0) as f64;
+                if let Some(ref mut doc) = view.document {
+                    doc.set_viewport_scroll(blitz_dom::Point {
+                        x: 0.0,
+                        y: target_y,
+                    });
+                }
+                view.needs_render = true;
                 return true;
             }
         }

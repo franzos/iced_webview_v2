@@ -73,6 +73,7 @@ impl ImageInfo {
     const WIDTH: u32 = 800;
     const HEIGHT: u32 = 800;
 
+    #[allow(dead_code)]
     fn new(mut pixels: Vec<u8>, format: PixelFormat, width: u32, height: u32) -> Self {
         // R, G, B, A
         assert_eq!(pixels.len() % 4, 0);
@@ -87,6 +88,21 @@ impl ImageInfo {
             height,
             handle: image::Handle::from_rgba(width, height, (*raw_pixels).clone()),
             raw_pixels,
+        }
+    }
+
+    /// Construct an `ImageInfo` for the shader-widget rendering path,
+    /// skipping the `image::Handle` allocation. Saves a viewport-sized
+    /// clone per frame for engines that never read `handle`.
+    #[allow(dead_code)]
+    pub(crate) fn from_shader_pixels(pixels: Vec<u8>, width: u32, height: u32) -> Self {
+        debug_assert_eq!(pixels.len() % 4, 0);
+        Self {
+            width,
+            height,
+            // 1×1 placeholder; the shader widget path doesn't read this.
+            handle: image::Handle::from_rgba(1, 1, vec![0u8; 4]),
+            raw_pixels: Arc::new(pixels),
         }
     }
 

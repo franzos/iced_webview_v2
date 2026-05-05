@@ -1,6 +1,6 @@
 [package]
 name = "iced_webview_v2"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 rust-version = "1.90.0"
 description = "An easily embedded webview library for iced"
@@ -31,7 +31,7 @@ blitz = [
     "dep:blitz-traits",
     "dep:blitz-net",
     "dep:anyrender",
-    "dep:anyrender_vello_cpu",
+    "dep:anyrender_vello",
     "dep:peniko",
     "dep:cursor-icon",
     "dep:keyboard-types",
@@ -51,14 +51,18 @@ litehtml = { version = "0.2.4", features = ["pixbuf", "html"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 url = "2.5.2"
 
-# Blitz engine deps (git: stylo 0.15, matching Servo)
+# Blitz engine deps (git: stylo 0.15, matching Servo 0.1.0). Bumping blitz
+# to a Stylo 0.16 pin is blocked by Cargo's `links = "servo_style_crate"`
+# rule — only one Stylo crate may exist in the dep graph, even with the
+# `servo` feature inactive. Realign once Servo publishes a Stylo 0.16
+# release.
 blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
 blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
 blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
 anyrender = { version = "0.8", optional = true }
-anyrender_vello_cpu = { version = "0.10", optional = true }
+anyrender_vello = { version = "0.8", optional = true }
 peniko = { version = "0.6", optional = true }
 cursor-icon = { version = "1", optional = true }
 keyboard-types = { version = "0.7", optional = true }

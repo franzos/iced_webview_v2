@@ -6,7 +6,7 @@
 A library to embed Web views in iced applications
 
 This library supports
-- [Blitz] — Rust-native HTML/CSS renderer (Stylo + Taffy + Vello), modern CSS (flexbox, grid), no JS
+- [Blitz] — Rust-native HTML/CSS renderer (Stylo + Taffy + Vello), GPU-rasterized via wgpu, modern CSS (flexbox, grid), no JS
 - [litehtml] — lightweight CPU-based HTML/CSS rendering, no JS or navigation (good for static content like emails)
 - [Servo] — full browser engine (HTML5, CSS3, JS via SpiderMonkey), rendered to CPU buffer, displayed via iced shader widget
 - [CEF] — Chromium Embedded Framework via cef-rs, full Chromium browser compat (HTML5, CSS3, JS)
@@ -126,8 +126,8 @@ The periodic `Action::Update` subscription is required — it drives rendering, 
 
 Handled transparently — `webview.view()` returns the right widget type based on the engine feature — but worth knowing about:
 
-- **Image Handle** (Blitz, litehtml) — the engine rasterizes to a CPU pixel buffer, displayed via iced's `image::Handle`. Simple, works everywhere.
-- **Shader widget** (Servo, CEF) — uses iced's `shader` widget with a persistent GPU texture updated in-place via `queue.write_texture()`. Avoids texture cache churn and flickering during rapid updates like scrolling.
+- **Image Handle** (litehtml) — the engine rasterizes to a CPU pixel buffer, displayed via iced's `image::Handle`. Simple, works everywhere.
+- **Shader widget** (Blitz, Servo, CEF) — uses iced's `shader` widget with a persistent GPU texture updated in-place via `queue.write_texture()`. Avoids texture cache churn and flickering during rapid updates like scrolling.
 
 ## Requirements
 
@@ -195,8 +195,9 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 
 ### Blitz
 
-- **No incremental rendering** — the entire visible viewport is re-rasterized on every frame that needs updating (scroll, resize, resource load). Blitz is pre-alpha and doesn't yet support dirty-rect or partial repaint like Firefox/Chrome.
-- **No `:hover` CSS rendering** — hover state is tracked internally (cursor changes work), but we skip the visual re-render for `:hover` styles to avoid the CPU cost. This matches litehtml's behaviour.
+- **No incremental rendering** — the entire visible viewport is re-rasterized on every frame that needs updating. Blitz is pre-alpha and doesn't yet support dirty-rect or partial repaint like Firefox/Chrome. Blitz manages its own scrolling internally (`viewport_scroll`), so the rasterized texture is bounded by window size regardless of document length.
+- **GPU rasterization with CPU readback** — the viewport is rasterized on the GPU via `anyrender_vello`, then read back to a CPU buffer and re-uploaded to iced's wgpu device for display. The redundant roundtrip is unavoidable until iced and `anyrender_vello` agree on a wgpu major version (currently 27 vs 28). See [TODO.md](TODO.md).
+- **`:hover` CSS rendering** — hover state changes trigger a Stylo re-resolve before paint, so `:hover` styles are visually applied (unlike litehtml).
 - **Keyboard input** — iced keyboard events are wired through to blitz-dom (text input, Tab navigation, arrow keys, copy/paste). Dark mode is detected from `ICED_WEBVIEW_COLOR_SCHEME` env var or GTK theme.
 - **No JavaScript** — by design; Blitz is a CSS rendering engine, not a browser engine.
 - **Image/CSS fetching is internal** — Blitz uses `blitz_net::Provider` to fetch sub-resources (images, CSS `@import`) automatically. It does not participate in the widget layer's manual image pipeline (`take_pending_images`/`load_image_from_bytes`). The widget layer fetches the initial HTML page for URL navigation, but all sub-resource loading is handled by Blitz internally.
@@ -228,9 +229,10 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 
 ## TODO
 
+- **Blitz zero-copy GPU rendering** — eliminate the GPU→CPU→GPU readback by sharing iced's wgpu device with `anyrender_vello`. Blocked until the two agree on a wgpu major version. See [TODO.md](TODO.md).
 - **Blitz incremental layout** — `blitz-dom` has a feature-gated `incremental` flag that enables selective cache clearing and damage propagation in `resolve()`. Currently experimental (incomplete FC root detection, no tests), but once stabilized it would make re-layout after hover/resource loads much cheaper by only updating affected subtrees instead of the full tree.
-- **`:hover` CSS rendering** — both engines skip the visual re-render for hover styles. With incremental layout + viewport-only rendering, it may become cheap enough to re-enable for Blitz.
-- **Async rendering** — rendering currently blocks the main thread. Moving the `paint_scene` + `render_to_buffer` call to a background thread would keep the UI responsive during re-renders.
+- **litehtml `:hover` CSS rendering** — litehtml tracks hover state but doesn't re-render styles. Blitz now does this; same approach (resolve before paint) could be applied.
+- **Async rendering** — rendering currently blocks the main thread. Moving the `paint_scene` + readback call to a background thread would keep the UI responsive during re-renders.
 - **Servo/CEF text selection API** — expose the engine-managed selected text through `get_selected_text()` so the embedding can query it.
 
 ## Engine Comparison
@@ -242,18 +244,18 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 | **Table layout** | Yes | Yes | Yes | Yes |
 | **JavaScript** | No | No | Yes (SpiderMonkey) | Yes (V8) |
 | **Keyboard input** | Yes (wired to blitz-dom) | No | Yes | Yes |
-| **Text selection** | Supported in blitz-dom, not yet wired | Yes | Yes (engine-managed, not queryable from API) | Yes (Chromium-managed, not queryable from API) |
-| **`:hover` CSS styles** | Tracked, not rendered (CPU cost) | Tracked, not rendered | Yes | Yes |
+| **Text selection** | Yes (drag-to-select via blitz-dom) | Yes | Yes (engine-managed, not queryable from API) | Yes (Chromium-managed, not queryable from API) |
+| **`:hover` CSS styles** | Yes | Tracked, not rendered | Yes | Yes |
 | **Cursor changes** | Yes | Yes | Yes | Yes |
 | **Link navigation** | Yes | Yes | Yes | Yes |
 | **Image loading** | Yes (blitz-net, automatic) | Yes (manual fetch pipeline) | Yes (built-in) | Yes (built-in) |
 | **CSS `@import`** | Yes (blitz-net) | Yes (recursive fetch + cache) | Yes (built-in) | Yes (built-in) |
 | **Scrolling** | Yes | Yes | Yes (engine-managed, cursor-targeted) | Yes (engine-managed) |
-| **Rendering path** | iced image Handle | iced image Handle | iced shader widget (direct GPU texture) | iced shader widget (direct GPU texture) |
+| **Rendering path** | iced shader widget (direct GPU texture) | iced image Handle | iced shader widget (direct GPU texture) | iced shader widget (direct GPU texture) |
 | **Incremental rendering** | No (experimental flag exists) | No | Yes | Yes |
 | **Navigation history** | No | No | Yes | Yes |
 | **Build deps** | Pure Rust | C++ (`clang`/`libclang`) | Rust + system deps (git-only) | C++ (CEF binary download) |
-| **Rendering performance** | Low (Stylo + Vello CPU, needs `--release`) | Moderate | Best (full rendering pipeline) | Best (full Chromium pipeline) |
+| **Rendering performance** | Moderate (Vello GPU, viewport-only repaint, GPU→CPU readback tax) | Moderate | Best (full rendering pipeline) | Best (full Chromium pipeline) |
 | **Binary size impact** | Moderate | Small | Large (50-150+ MB) | Large (~200-300 MB runtime) |
 | **License** | MIT/Apache-2.0 + MPL-2.0 (Stylo) | MIT + BSD-3-Clause | MPL-2.0 | Apache-2.0 (this crate) + BSD (CEF) |
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.8] - 2026-05-05
+
+### Changed
+- Blitz engine switched from CPU rasterization (`anyrender_vello_cpu`) to GPU rasterization (`anyrender_vello`)
+- Blitz rendering routed through iced's shader widget instead of `image::Handle` — avoids viewport-sized Handle clones per frame
+- Blitz scroll handling delegated to the engine via `viewport_scroll` / `Wheel` events — drops the manual `scroll_y` / `content_height` bookkeeping
+- Persistent `GpuRasterizer` shared across views so wgpu/Vello pipeline init happens once, not per frame
+- `ImageInfo::from_shader_pixels` skips the `image::Handle` allocation on the shader path
+
+### Added
+- Blitz `:hover` CSS rendering — resolve runs before paint so hover styles appear visually
+- Blitz drag-selection — `PointerMove` carries live button mask so Blitz can drive text selection
+- Blitz event-driven redraw — `ShellProvider::request_redraw` signals from scroll, hover, IME, resource arrival
+- `TODO.md` documenting Stylo 0.16 and wgpu version blockers
+
 ## [0.1.7] - 2026-04-21
 
 ### Added

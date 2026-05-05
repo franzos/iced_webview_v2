@@ -16,9 +16,9 @@ use url::Url;
 
 use crate::{engines, ImageInfo, PageType, ViewId};
 
-#[cfg(any(feature = "servo", feature = "cef"))]
+#[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
 use crate::webview::shader_widget::WebViewPrimitive;
-#[cfg(any(feature = "servo", feature = "cef"))]
+#[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
 use iced::widget::shader;
 
 #[allow(missing_docs)]
@@ -500,7 +500,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             )
             .into()
         } else {
-            #[cfg(any(feature = "servo", feature = "cef"))]
+            #[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
             {
                 shader::Shader::new(AdvancedShaderProgram::new(
                     id,
@@ -511,7 +511,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 .height(Length::Fill)
                 .into()
             }
-            #[cfg(not(any(feature = "servo", feature = "cef")))]
+            #[cfg(not(any(feature = "servo", feature = "cef", feature = "blitz")))]
             {
                 WebViewWidget::new(
                     id,
@@ -529,14 +529,14 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     }
 }
 
-#[cfg(any(feature = "servo", feature = "cef"))]
+#[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
 struct AdvancedShaderProgram<'a> {
     view_id: ViewId,
     image_info: &'a ImageInfo,
     cursor: Interaction,
 }
 
-#[cfg(any(feature = "servo", feature = "cef"))]
+#[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
 impl<'a> AdvancedShaderProgram<'a> {
     fn new(view_id: ViewId, image_info: &'a ImageInfo, cursor: Interaction) -> Self {
         Self {
@@ -547,13 +547,13 @@ impl<'a> AdvancedShaderProgram<'a> {
     }
 }
 
-#[cfg(any(feature = "servo", feature = "cef"))]
+#[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
 #[derive(Default)]
 struct AdvancedShaderState {
     bounds: Size<u32>,
 }
 
-#[cfg(any(feature = "servo", feature = "cef"))]
+#[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
 impl<'a> shader::Program<Action> for AdvancedShaderProgram<'a> {
     type State = AdvancedShaderState;
     type Primitive = WebViewPrimitive;
@@ -644,6 +644,7 @@ struct WebViewWidget<'a> {
 }
 
 impl<'a> WebViewWidget<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         id: ViewId,
         bounds: Size<u32>,
