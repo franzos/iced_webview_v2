@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.9] - 2026-05-25
+
+### Fixed
+- litehtml email rendering: nested table content no longer inherits `text-align: center` from a `<td align="center">` wrapper (via litehtml 0.2.5)
+- HiDPI rendering: litehtml/blitz content was stretched vertically by the display scale factor
+
 ## [0.1.8] - 2026-05-05
 
 ### Changed

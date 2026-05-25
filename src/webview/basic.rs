@@ -542,7 +542,6 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 self.engine.get_selection_rects(id),
                 self.engine.get_scroll_y(id),
                 content_height,
-                self.scale_factor,
             )
             .into()
         } else {
@@ -568,7 +567,6 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     self.engine.get_selection_rects(id),
                     0.0,
                     0.0,
-                    self.scale_factor,
                 )
                 .into()
             }
@@ -610,7 +608,6 @@ struct WebViewWidget<'a> {
     selection_rects: &'a [[f32; 4]],
     scroll_y: f32,
     content_height: f32,
-    scale_factor: f32,
 }
 
 impl<'a> WebViewWidget<'a> {
@@ -620,7 +617,6 @@ impl<'a> WebViewWidget<'a> {
         selection_rects: &'a [[f32; 4]],
         scroll_y: f32,
         content_height: f32,
-        scale_factor: f32,
     ) -> Self {
         Self {
             handle: image_info.as_handle(),
@@ -629,7 +625,6 @@ impl<'a> WebViewWidget<'a> {
             selection_rects,
             scroll_y,
             content_height,
-            scale_factor,
         }
     }
 }
@@ -668,16 +663,15 @@ where
         let bounds = layout.bounds();
 
         if self.content_height > 0.0 {
-            // The pixel buffer is rendered at physical size (logical × scale_factor),
-            // so we must scale the draw rectangle to match, otherwise iced squishes
-            // the image to fit the smaller logical rectangle.
-            let s = self.scale_factor;
+            // Draw rect is in logical coords; iced scales it to physical by the
+            // window scale factor, matching the physically-sized pixel buffer.
+            // content_height and scroll_y are logical — no scale applied here.
             renderer.with_layer(bounds, |renderer| {
                 let image_bounds = Rectangle {
                     x: bounds.x,
-                    y: bounds.y - self.scroll_y * s,
+                    y: bounds.y - self.scroll_y,
                     width: bounds.width,
-                    height: self.content_height * s,
+                    height: self.content_height,
                 };
                 renderer.draw_image(
                     core_image::Image::new(self.handle.clone()).snap(true),

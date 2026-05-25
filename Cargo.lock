@@ -3559,7 +3559,7 @@ dependencies = [
 
 [[package]]
 name = "iced_webview_v2"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyrender",
  "anyrender_vello",
@@ -4727,9 +4727,9 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "litehtml"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2acf055e92bfeb6e5f46cdf526d5154f7e0d3bdd762d89489b274bfcd47b7b96"
+checksum = "772f6371d363ce50dfbfa25435beba04cc11c856e4cea479fe7502208c392461"
 dependencies = [
  "base64 0.22.1",
  "cosmic-text 0.14.2",
@@ -4742,9 +4742,9 @@ dependencies = [
 
 [[package]]
 name = "litehtml-sys"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c5f8f62a5b2d8cf4512c97baa4f4aab29fba5888f73799966e40131247d8cdf"
+checksum = "18887b1293b44d5ee4da0899dfbc7c408b048768c89f3414e9054add9372b6ed"
 dependencies = [
  "cc",
 ]

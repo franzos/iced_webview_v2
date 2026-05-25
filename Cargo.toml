@@ -1,6 +1,6 @@
 [package]
 name = "iced_webview_v2"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 rust-version = "1.90.0"
 description = "An easily embedded webview library for iced"
@@ -47,7 +47,7 @@ docs_only = []
 [dependencies]
 iced = { version = "0.14", features = ["advanced", "image", "tokio", "lazy"] }
 rand = "0.8.5"
-litehtml = { version = "0.2.4", features = ["pixbuf", "html"], optional = true }
+litehtml = { version = "0.2.5", features = ["pixbuf", "html"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 url = "2.5.2"
 
