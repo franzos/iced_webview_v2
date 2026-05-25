@@ -52,11 +52,13 @@ pub struct WebViewPipeline {
     bind_group: wgpu::BindGroup,
     render_pipeline: wgpu::RenderPipeline,
     texture_size: (u32, u32),
+    texture_format: wgpu::TextureFormat,
 }
 
 impl WebViewPipeline {
     fn recreate_texture(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        let (texture, texture_view) = create_texture(device, width.max(1), height.max(1));
+        let (texture, texture_view) =
+            create_texture(device, width.max(1), height.max(1), self.texture_format);
 
         self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("webview_bind_group"),
@@ -79,10 +81,20 @@ impl WebViewPipeline {
     }
 }
 
+// Match the texture's color space to the surface: an sRGB target re-encodes our linear output, a linear (web-colors) target needs the sRGB bytes passed through untouched.
+fn pick_texture_format(surface: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    if surface.is_srgb() {
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    }
+}
+
 fn create_texture(
     device: &wgpu::Device,
     width: u32,
     height: u32,
+    format: wgpu::TextureFormat,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("webview_texture"),
@@ -94,7 +106,7 @@ fn create_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -158,7 +170,8 @@ impl shader::Primitive for WebViewPrimitive {
 
 impl shader::Pipeline for WebViewPipeline {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let (texture, texture_view) = create_texture(device, 1, 1);
+        let texture_format = pick_texture_format(format);
+        let (texture, texture_view) = create_texture(device, 1, 1, texture_format);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("webview_sampler"),
@@ -252,6 +265,7 @@ impl shader::Pipeline for WebViewPipeline {
             bind_group,
             render_pipeline,
             texture_size: (1, 1),
+            texture_format,
         }
     }
 }
@@ -359,3 +373,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(t_texture, t_sampler, in.uv);
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn texture_format_follows_surface_color_space() {
+        assert_eq!(
+            pick_texture_format(wgpu::TextureFormat::Bgra8UnormSrgb),
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        );
+        assert_eq!(
+            pick_texture_format(wgpu::TextureFormat::Rgba8UnormSrgb),
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        );
+        assert_eq!(
+            pick_texture_format(wgpu::TextureFormat::Bgra8Unorm),
+            wgpu::TextureFormat::Rgba8Unorm
+        );
+    }
+}

@@ -112,6 +112,10 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     }
 
     /// Set the display scale factor for HiDPI rendering.
+    /// Embedders should feed the real window scale factor (query
+    /// [`iced::window::scale_factor`] on window open/resize) so content renders
+    /// at physical resolution; leaving it at the default `1.0` makes HiDPI
+    /// output upscaled and fuzzy.
     pub fn set_scale_factor(&mut self, scale: f32) {
         self.scale_factor = scale;
         self.engine.set_scale_factor(scale);

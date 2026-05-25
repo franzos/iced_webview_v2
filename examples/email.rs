@@ -113,6 +113,8 @@ fn main() -> iced::Result {
 enum Message {
     WebView(Action),
     ViewCreated,
+    WindowChanged(iced::window::Id),
+    ScaleFactor(f32),
 }
 
 struct App {
@@ -122,8 +124,7 @@ struct App {
 
 impl App {
     fn new() -> (Self, Task<Message>) {
-        let mut webview = WebView::new().on_create_view(Message::ViewCreated);
-        webview.set_scale_factor(2.0);
+        let webview = WebView::new().on_create_view(Message::ViewCreated);
         (
             Self {
                 webview,
@@ -145,6 +146,11 @@ impl App {
                 }
                 Task::none()
             }
+            Message::WindowChanged(id) => iced::window::scale_factor(id).map(Message::ScaleFactor),
+            Message::ScaleFactor(f) => {
+                self.webview.set_scale_factor(f);
+                Task::none()
+            }
         }
     }
 
@@ -157,15 +163,18 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
+        let window = Subscription::batch([
+            iced::window::open_events().map(Message::WindowChanged),
+            iced::window::resize_events().map(|(id, _)| Message::WindowChanged(id)),
+        ]);
+
         #[cfg(feature = "servo")]
-        {
-            self.webview.subscription().map(Message::WebView)
-        }
+        let engine = self.webview.subscription().map(Message::WebView);
         #[cfg(not(feature = "servo"))]
-        {
-            time::every(Duration::from_millis(16))
-                .map(|_| Action::Update)
-                .map(Message::WebView)
-        }
+        let engine = time::every(Duration::from_millis(16))
+            .map(|_| Action::Update)
+            .map(Message::WebView);
+
+        Subscription::batch([window, engine])
     }
 }
