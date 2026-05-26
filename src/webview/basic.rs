@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use iced::advanced::image as core_image;
@@ -51,6 +52,8 @@ pub enum Action {
     /// layout so `doc.render()` can be skipped (redraw only).
     /// The u64 is the navigation epoch — stale results are discarded.
     ImageFetchComplete(ViewId, String, Result<Vec<u8>, String>, bool, u64),
+    /// Internal: carries the window scale factor queried from iced.
+    SetScaleFactor(f32),
 }
 
 /// The Basic WebView widget that creates and shows webview(s).
@@ -89,6 +92,9 @@ where
     /// Per-view navigation epoch. Incremented on `GoToUrl` so that image
     /// fetches spawned for a previous page are discarded when they complete.
     nav_epochs: HashMap<ViewId, u64>,
+    /// Window scale factor observed by the shader path (f32 bits; `0` = unset).
+    /// Read back in the `Update` handler to auto-correct HiDPI rendering.
+    scale_observer: Arc<AtomicU32>,
 }
 
 impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView<Engine, Message> {
@@ -126,6 +132,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
             action_mapper: None,
             inflight_images: 0,
             nav_epochs: HashMap::new(),
+            scale_observer: Arc::new(AtomicU32::new(0)),
         }
     }
 }
@@ -136,15 +143,27 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
         Self::default()
     }
 
-    /// Set the display scale factor for HiDPI rendering.
-    /// The engine will render at `logical_size * scale_factor` pixels.
-    /// Embedders should feed the real window scale factor (query
-    /// [`iced::window::scale_factor`] on window open/resize) so content renders
-    /// at physical resolution; leaving it at the default `1.0` makes HiDPI
-    /// output upscaled and fuzzy.
+    /// Override the display scale factor for HiDPI rendering.
+    /// The engine renders at `logical_size * scale_factor` pixels. The library
+    /// auto-detects the window scale factor, so calling this is only needed to
+    /// force a specific value.
     pub fn set_scale_factor(&mut self, scale: f32) {
+        if (self.scale_factor - scale).abs() <= f32::EPSILON {
+            return;
+        }
         self.scale_factor = scale;
         self.engine.set_scale_factor(scale);
+    }
+
+    fn query_scale_factor(&self) -> Task<Message> {
+        if let Some(mapper) = &self.action_mapper {
+            let mapper = mapper.clone();
+            iced::window::latest()
+                .and_then(iced::window::scale_factor)
+                .map(move |f| mapper(Action::SetScaleFactor(f)))
+        } else {
+            Task::none()
+        }
     }
 
     /// subscribe to create view events
@@ -222,6 +241,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 if let Some(view_id) = self.index_as_view_id(index) {
                     self.current_view_index = Some(index as usize);
                     self.engine.request_render(view_id, self.view_size);
+                    tasks.push(self.query_scale_factor());
                 } else {
                     eprintln!(
                         "iced_webview: ChangeView index {} is invalid or already closed",
@@ -306,6 +326,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 if let Some(on_view_create) = &self.on_create_view {
                     tasks.push(Task::done(on_view_create.clone()))
                 }
+                tasks.push(self.query_scale_factor());
             }
             Action::GoBackward => {
                 if let Some(view_id) = self.get_current_view_id() {
@@ -402,6 +423,12 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             }
             Action::Update => {
                 self.engine.update();
+
+                let observed = self.scale_observer.load(Ordering::Relaxed);
+                if observed != 0 {
+                    self.set_scale_factor(f32::from_bits(observed));
+                }
+
                 if let Some(view_id) = self.get_current_view_id() {
                     self.engine.request_render(view_id, self.view_size);
 
@@ -454,6 +481,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 if self.view_size != size {
                     self.view_size = size;
                     self.engine.resize(size);
+                    tasks.push(self.query_scale_factor());
                 } else {
                     // No-op resize (published every frame because the widget
                     // is recreated with bounds 0,0). Skip request_render to
@@ -516,6 +544,9 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 // picks up staged images via request_render's staged check.
                 return Task::batch(tasks);
             }
+            Action::SetScaleFactor(f) => {
+                self.set_scale_factor(f);
+            }
         };
 
         if let Some(view_id) = self.get_current_view_id() {
@@ -555,6 +586,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 iced::widget::Shader::new(WebViewShaderProgram::new(
                     self.engine.get_view(id),
                     self.engine.get_cursor(id),
+                    self.scale_observer.clone(),
                 ))
                 .width(Length::Fill)
                 .height(Length::Fill)

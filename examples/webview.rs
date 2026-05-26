@@ -38,8 +38,6 @@ fn main() -> iced::Result {
 enum Message {
     WebView(Action),
     ViewCreated,
-    WindowChanged(iced::window::Id),
-    ScaleFactor(f32),
 }
 
 struct App {
@@ -70,11 +68,6 @@ impl App {
                 self.ready = true;
                 self.webview.update(Action::ChangeView(0))
             }
-            Message::WindowChanged(id) => iced::window::scale_factor(id).map(Message::ScaleFactor),
-            Message::ScaleFactor(f) => {
-                self.webview.set_scale_factor(f);
-                Task::none()
-            }
         }
     }
 
@@ -87,18 +80,15 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let window = Subscription::batch([
-            iced::window::open_events().map(Message::WindowChanged),
-            iced::window::resize_events().map(|(id, _)| Message::WindowChanged(id)),
-        ]);
-
         #[cfg(feature = "servo")]
-        let engine = self.webview.subscription().map(Message::WebView);
+        {
+            self.webview.subscription().map(Message::WebView)
+        }
         #[cfg(not(feature = "servo"))]
-        let engine = time::every(Duration::from_millis(10))
-            .map(|_| Action::Update)
-            .map(Message::WebView);
-
-        Subscription::batch([window, engine])
+        {
+            time::every(Duration::from_millis(10))
+                .map(|_| Action::Update)
+                .map(Message::WebView)
+        }
     }
 }

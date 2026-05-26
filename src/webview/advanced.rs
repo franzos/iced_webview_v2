@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use iced::advanced::image as core_image;
@@ -49,6 +50,8 @@ pub enum Action {
     /// Internal: carries the result of an image fetch.
     /// The bool is `redraw_on_ready`, the u64 is the navigation epoch.
     ImageFetchComplete(ViewId, String, Result<Vec<u8>, String>, bool, u64),
+    /// Internal: carries the window scale factor queried from iced.
+    SetScaleFactor(f32),
 }
 
 /// The Advanced WebView widget that creates and shows webview(s).
@@ -81,6 +84,8 @@ where
     action_mapper: Option<Arc<dyn Fn(Action) -> Message + Send + Sync>>,
     inflight_images: usize,
     nav_epochs: HashMap<ViewId, u64>,
+    /// Window scale factor observed by the shader path (f32 bits; `0` = unset).
+    scale_observer: Arc<AtomicU32>,
 }
 
 impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
@@ -101,6 +106,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
             action_mapper: None,
             inflight_images: 0,
             nav_epochs: HashMap::new(),
+            scale_observer: Arc::new(AtomicU32::new(0)),
         }
     }
 }
@@ -111,14 +117,27 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
         Self::default()
     }
 
-    /// Set the display scale factor for HiDPI rendering.
-    /// Embedders should feed the real window scale factor (query
-    /// [`iced::window::scale_factor`] on window open/resize) so content renders
-    /// at physical resolution; leaving it at the default `1.0` makes HiDPI
-    /// output upscaled and fuzzy.
+    /// Override the display scale factor for HiDPI rendering.
+    /// The engine renders at `logical_size * scale_factor` pixels. The library
+    /// auto-detects the window scale factor, so calling this is only needed to
+    /// force a specific value.
     pub fn set_scale_factor(&mut self, scale: f32) {
+        if (self.scale_factor - scale).abs() <= f32::EPSILON {
+            return;
+        }
         self.scale_factor = scale;
         self.engine.set_scale_factor(scale);
+    }
+
+    fn query_scale_factor(&self) -> Task<Message> {
+        if let Some(mapper) = &self.action_mapper {
+            let mapper = mapper.clone();
+            iced::window::latest()
+                .and_then(iced::window::scale_factor)
+                .map(move |f| mapper(Action::SetScaleFactor(f)))
+        } else {
+            Task::none()
+        }
     }
 
     /// Subscribe to create view events
@@ -243,6 +262,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 if let Some(on_view_create) = &self.on_create_view {
                     tasks.push(Task::done((on_view_create)(id)))
                 }
+                tasks.push(self.query_scale_factor());
             }
             Action::GoBackward(id) => {
                 self.engine.go_back(id);
@@ -324,6 +344,12 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             }
             Action::Update(id) => {
                 self.engine.update();
+
+                let observed = self.scale_observer.load(Ordering::Relaxed);
+                if observed != 0 {
+                    self.set_scale_factor(f32::from_bits(observed));
+                }
+
                 self.engine.request_render(id, self.view_size);
 
                 if self.inflight_images == 0 {
@@ -367,6 +393,11 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             }
             Action::UpdateAll => {
                 self.engine.update();
+
+                let observed = self.scale_observer.load(Ordering::Relaxed);
+                if observed != 0 {
+                    self.set_scale_factor(f32::from_bits(observed));
+                }
 
                 if self.inflight_images == 0 {
                     for id in self.engine.view_ids() {
@@ -415,6 +446,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 if self.view_size != size {
                     self.view_size = size;
                     self.engine.resize(size);
+                    tasks.push(self.query_scale_factor());
                 }
                 // Always skip the per-action render below; the Update/UpdateAll
                 // tick handles it. For no-op resizes (most frames) this avoids
@@ -472,6 +504,9 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 }
                 return Task::batch(tasks);
             }
+            Action::SetScaleFactor(f) => {
+                self.set_scale_factor(f);
+            }
         };
 
         Task::batch(tasks)
@@ -509,6 +544,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     id,
                     self.engine.get_view(id),
                     self.engine.get_cursor(id),
+                    self.scale_observer.clone(),
                 ))
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -536,15 +572,22 @@ struct AdvancedShaderProgram<'a> {
     view_id: ViewId,
     image_info: &'a ImageInfo,
     cursor: Interaction,
+    scale_observer: Arc<AtomicU32>,
 }
 
 #[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
 impl<'a> AdvancedShaderProgram<'a> {
-    fn new(view_id: ViewId, image_info: &'a ImageInfo, cursor: Interaction) -> Self {
+    fn new(
+        view_id: ViewId,
+        image_info: &'a ImageInfo,
+        cursor: Interaction,
+        scale_observer: Arc<AtomicU32>,
+    ) -> Self {
         Self {
             view_id,
             image_info,
             cursor,
+            scale_observer,
         }
     }
 }
@@ -621,6 +664,7 @@ impl<'a> shader::Program<Action> for AdvancedShaderProgram<'a> {
             pixels: self.image_info.pixels(),
             width: self.image_info.image_width(),
             height: self.image_info.image_height(),
+            scale_observer: self.scale_observer.clone(),
         }
     }
 

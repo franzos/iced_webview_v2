@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use iced::mouse::{self, Interaction};
@@ -16,11 +17,20 @@ use crate::ImageInfo;
 pub struct WebViewShaderProgram<'a> {
     image_info: &'a ImageInfo,
     cursor: Interaction,
+    scale_observer: Arc<AtomicU32>,
 }
 
 impl<'a> WebViewShaderProgram<'a> {
-    pub fn new(image_info: &'a ImageInfo, cursor: Interaction) -> Self {
-        Self { image_info, cursor }
+    pub fn new(
+        image_info: &'a ImageInfo,
+        cursor: Interaction,
+        scale_observer: Arc<AtomicU32>,
+    ) -> Self {
+        Self {
+            image_info,
+            cursor,
+            scale_observer,
+        }
     }
 }
 
@@ -33,6 +43,7 @@ pub struct WebViewPrimitive {
     pub(crate) pixels: Arc<Vec<u8>>,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) scale_observer: Arc<AtomicU32>,
 }
 
 impl std::fmt::Debug for WebViewPrimitive {
@@ -128,8 +139,11 @@ impl shader::Primitive for WebViewPrimitive {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         _bounds: &Rectangle,
-        _viewport: &shader::Viewport,
+        viewport: &shader::Viewport,
     ) {
+        self.scale_observer
+            .store(viewport.scale_factor().to_bits(), Ordering::Relaxed);
+
         if (self.width, self.height) != pipeline.texture_size {
             pipeline.recreate_texture(device, self.width, self.height);
         }
@@ -338,6 +352,7 @@ impl<'a> shader::Program<Action> for WebViewShaderProgram<'a> {
             pixels: self.image_info.pixels(),
             width: self.image_info.image_width(),
             height: self.image_info.image_height(),
+            scale_observer: self.scale_observer.clone(),
         }
     }
 

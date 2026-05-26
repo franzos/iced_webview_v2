@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.11] - 2026-05-26
+
+### Fixed
+- Automatic HiDPI scale-factor detection — no manual `set_scale_factor` needed
+
 ## [0.1.10] - 2026-05-26
 
 ### Fixed

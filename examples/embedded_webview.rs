@@ -81,7 +81,7 @@ impl App {
                 .webview
                 .update(Action::CreateView(PageType::Url(URL.to_string()))),
             Message::WebviewCreated => {
-                if self.current_view == None {
+                if self.current_view.is_none() {
                     // if its the first tab change to it, after that require switching manually
                     return Task::done(Message::CycleWebview);
                 }
@@ -112,7 +112,7 @@ impl App {
         }
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         let mut column = column![row![
             text(if !self.show_webview {
                 "Click the button to open a webview"
