@@ -5,6 +5,8 @@
 
 A library to embed Web views in iced applications
 
+> **Heads up — the [`next`](https://github.com/franzos/iced_webview_v2/tree/next) branch tracks iced `master` and blitz `0.3.0-alpha.4` (both on wgpu 29).** Blitz there rasterizes directly on iced's `wgpu::Device` via a shared Vello renderer — no CPU pixel readback. Servo is temporarily disabled on that branch (stylo 0.15 vs 0.17 conflict).
+
 This library supports
 - [Blitz] — Rust-native HTML/CSS renderer (Stylo + Taffy + Vello), GPU-rasterized via wgpu, modern CSS (flexbox, grid), no JS
 - [litehtml] — lightweight CPU-based HTML/CSS rendering, no JS or navigation (good for static content like emails)
