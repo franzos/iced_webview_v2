@@ -534,8 +534,9 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
         let content_height = self.engine.get_content_height(id);
 
         if content_height > 0.0 {
-            // Engines that render a full-document buffer (blitz, litehtml):
-            // use the image Handle widget with y-offset scrolling.
+            // litehtml renders a full-document buffer: draw it with the image
+            // Handle widget and scroll by y-offset. (blitz/servo report height 0
+            // and take the shader path below.)
             WebViewWidget::new(
                 self.engine.get_view(id),
                 self.engine.get_cursor(id),
@@ -546,8 +547,8 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             .into()
         } else {
             // Engines that manage their own scrolling and produce a viewport-
-            // sized frame each tick (servo): use the shader widget for direct
-            // GPU texture updates, avoiding Handle cache churn.
+            // sized frame each tick (servo, blitz, cef): use the shader widget
+            // for direct GPU texture updates, avoiding Handle cache churn.
             #[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
             {
                 use crate::webview::shader_widget::WebViewShaderProgram;
@@ -674,14 +675,18 @@ where
                     height: self.content_height,
                 };
                 renderer.draw_image(
-                    core_image::Image::new(self.handle.clone()).snap(true),
+                    core_image::Image::new(self.handle.clone())
+                        .snap(true)
+                        .filter_method(core_image::FilterMethod::Nearest),
                     image_bounds,
                     *viewport,
                 );
             });
         } else {
             renderer.draw_image(
-                core_image::Image::new(self.handle.clone()).snap(true),
+                core_image::Image::new(self.handle.clone())
+                    .snap(true)
+                    .filter_method(core_image::FilterMethod::Nearest),
                 bounds,
                 *viewport,
             );
@@ -724,7 +729,10 @@ where
         shell: &mut Shell<'_, Action>,
         _viewport: &Rectangle,
     ) {
-        let size = Size::new(layout.bounds().width as u32, layout.bounds().height as u32);
+        let size = Size::new(
+            layout.bounds().width.round() as u32,
+            layout.bounds().height.round() as u32,
+        );
         if self.bounds != size {
             self.bounds = size;
             shell.publish(Action::Resize(size));

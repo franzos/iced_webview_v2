@@ -3559,7 +3559,7 @@ dependencies = [
 
 [[package]]
 name = "iced_webview_v2"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyrender",
  "anyrender_vello",

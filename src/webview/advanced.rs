@@ -567,7 +567,7 @@ impl<'a> shader::Program<Action> for AdvancedShaderProgram<'a> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<shader::Action<Action>> {
-        let size = Size::new(bounds.width as u32, bounds.height as u32);
+        let size = Size::new(bounds.width.round() as u32, bounds.height.round() as u32);
         if state.bounds != size {
             state.bounds = size;
             return Some(shader::Action::publish(Action::Resize(size)));
@@ -712,14 +712,18 @@ where
                     height: self.content_height,
                 };
                 renderer.draw_image(
-                    core_image::Image::new(self.handle.clone()).snap(true),
+                    core_image::Image::new(self.handle.clone())
+                        .snap(true)
+                        .filter_method(core_image::FilterMethod::Nearest),
                     image_bounds,
                     *viewport,
                 );
             });
         } else {
             renderer.draw_image(
-                core_image::Image::new(self.handle.clone()).snap(true),
+                core_image::Image::new(self.handle.clone())
+                    .snap(true)
+                    .filter_method(core_image::FilterMethod::Nearest),
                 bounds,
                 *viewport,
             );
@@ -760,7 +764,10 @@ where
         shell: &mut Shell<'_, Action>,
         _viewport: &Rectangle,
     ) {
-        let size = Size::new(layout.bounds().width as u32, layout.bounds().height as u32);
+        let size = Size::new(
+            layout.bounds().width.round() as u32,
+            layout.bounds().height.round() as u32,
+        );
         if self.bounds != size {
             shell.publish(Action::Resize(size));
         }

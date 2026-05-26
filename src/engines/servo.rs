@@ -198,10 +198,20 @@ fn cursor_to_interaction(cursor: Cursor) -> Interaction {
     }
 }
 
+/// Logical (device-independent) size → physical device pixels. Servo lays out
+/// CSS at `device_size / hidpi`, so we feed it a physical-sized buffer and a
+/// matching hidpi factor — otherwise content is scaled twice on HiDPI displays.
+fn physical_size(size: Size<u32>, scale: f32) -> PhysicalSize<u32> {
+    PhysicalSize::new(
+        (size.width as f32 * scale).round().max(1.0) as u32,
+        (size.height as f32 * scale).round().max(1.0) as u32,
+    )
+}
+
 /// Paint a webview and capture the pixel buffer into `ImageInfo`.
-fn capture_frame(view: &mut ServoView, rendering_context: &SoftwareRenderingContext) {
-    let w = view.size.width;
-    let h = view.size.height;
+fn capture_frame(view: &mut ServoView, rendering_context: &SoftwareRenderingContext, scale: f32) {
+    let phys = physical_size(view.size, scale);
+    let (w, h) = (phys.width, phys.height);
     if w == 0 || h == 0 {
         return;
     }
@@ -246,20 +256,22 @@ impl Engine for Servo {
 
     fn render(&mut self, _size: Size<u32>) {
         let rc = Rc::clone(&self.rendering_context);
+        let scale = self.scale_factor;
         for view in self.views.values_mut() {
             if view.needs_render {
-                capture_frame(view, &rc);
+                capture_frame(view, &rc, scale);
             }
         }
     }
 
     fn request_render(&mut self, id: ViewId, _size: Size<u32>) {
         let rc = Rc::clone(&self.rendering_context);
+        let scale = self.scale_factor;
         let Some(view) = self.views.get_mut(id) else {
             return;
         };
         if view.needs_render {
-            capture_frame(view, &rc);
+            capture_frame(view, &rc, scale);
         }
     }
 
@@ -302,7 +314,11 @@ impl Engine for Servo {
         let webview = builder.build();
         webview.focus();
         webview.show();
-        webview.resize(PhysicalSize::new(w, h));
+        webview.set_hidpi_scale_factor(
+            euclid::Scale::<f32, DeviceIndependentPixel, DevicePixel>::new(self.scale_factor),
+        );
+        let phys = physical_size(size, self.scale_factor);
+        webview.resize(phys);
 
         let view = ServoView {
             webview,
@@ -310,10 +326,10 @@ impl Engine for Servo {
             url: url_str,
             title: String::new(),
             cursor: Interaction::Idle,
-            last_frame: ImageInfo::blank(w, h),
+            last_frame: ImageInfo::blank(phys.width, phys.height),
             needs_render: true,
             size,
-            last_cursor: DevicePoint::new(w as f32 / 2.0, h as f32 / 2.0),
+            last_cursor: DevicePoint::new(phys.width as f32 / 2.0, phys.height as f32 / 2.0),
         };
         self.views.insert(view)
     }
@@ -343,7 +359,7 @@ impl Engine for Servo {
     }
 
     fn resize(&mut self, size: Size<u32>) {
-        let phys = PhysicalSize::new(size.width.max(1), size.height.max(1));
+        let phys = physical_size(size, self.scale_factor);
         for view in self.views.values_mut() {
             view.size = size;
             view.webview.resize(phys);
@@ -362,6 +378,7 @@ impl Engine for Servo {
                 DeviceIndependentPixel,
                 DevicePixel,
             >::new(scale));
+            view.webview.resize(physical_size(view.size, scale));
             view.needs_render = true;
         }
     }
@@ -376,7 +393,8 @@ impl Engine for Servo {
     }
 
     fn handle_mouse_event(&mut self, id: ViewId, point: Point, event: mouse::Event) {
-        let device_point = DevicePoint::new(point.x, point.y);
+        let device_point =
+            DevicePoint::new(point.x * self.scale_factor, point.y * self.scale_factor);
         let Some(view) = self.views.get_mut(id) else {
             return;
         };
@@ -419,12 +437,17 @@ impl Engine for Servo {
     }
 
     fn scroll(&mut self, id: ViewId, delta: mouse::ScrollDelta) {
+        let scale = self.scale_factor;
         let Some(view) = self.views.get_mut(id) else {
             return;
         };
         let (dx, dy, mode) = match delta {
             mouse::ScrollDelta::Lines { x, y } => (x as f64, y as f64, WheelMode::DeltaLine),
-            mouse::ScrollDelta::Pixels { x, y } => (x as f64, y as f64, WheelMode::DeltaPixel),
+            mouse::ScrollDelta::Pixels { x, y } => (
+                (x * scale) as f64,
+                (y * scale) as f64,
+                WheelMode::DeltaPixel,
+            ),
         };
         let cursor_point = view.last_cursor;
         view.webview

@@ -146,8 +146,8 @@ fn create_document(
     scale: f32,
     color_scheme: ColorScheme,
 ) -> HtmlDocument {
-    let phys_w = (size.width as f32 * scale) as u32;
-    let phys_h = (size.height as f32 * scale) as u32;
+    let phys_w = (size.width as f32 * scale).round() as u32;
+    let phys_h = (size.height as f32 * scale).round() as u32;
 
     let config = DocumentConfig {
         base_url: if base_url.is_empty() {
@@ -218,8 +218,8 @@ fn render_view(view: &mut BlitzView, gpu: &mut GpuRasterizer) {
     };
 
     let scale = view.scale as f64;
-    let render_w = (w as f64 * scale) as u32;
-    let render_h = (h as f64 * scale) as u32;
+    let render_w = (w as f64 * scale).round() as u32;
+    let render_h = (h as f64 * scale).round() as u32;
 
     if render_w == 0 || render_h == 0 {
         view.last_frame = ImageInfo::blank(w, h);
@@ -398,8 +398,8 @@ impl Engine for Blitz {
             view.size = size;
             if let Some(ref mut doc) = view.document {
                 let scale = view.scale;
-                let phys_w = (size.width as f32 * scale) as u32;
-                let phys_h = (size.height as f32 * scale) as u32;
+                let phys_w = (size.width as f32 * scale).round() as u32;
+                let phys_h = (size.height as f32 * scale).round() as u32;
                 let mut vp = doc.viewport_mut();
                 vp.window_size = (phys_w, phys_h);
                 drop(vp);
@@ -417,8 +417,8 @@ impl Engine for Blitz {
         for view in self.views.values_mut() {
             view.scale = scale;
             if let Some(ref mut doc) = view.document {
-                let phys_w = (view.size.width as f32 * scale) as u32;
-                let phys_h = (view.size.height as f32 * scale) as u32;
+                let phys_w = (view.size.width as f32 * scale).round() as u32;
+                let phys_h = (view.size.height as f32 * scale).round() as u32;
                 let mut vp = doc.viewport_mut();
                 vp.window_size = (phys_w, phys_h);
                 vp.set_hidpi_scale(scale);

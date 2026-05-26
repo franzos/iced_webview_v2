@@ -81,7 +81,10 @@ impl WebViewPipeline {
     }
 }
 
-// Match the texture's color space to the surface: an sRGB target re-encodes our linear output, a linear (web-colors) target needs the sRGB bytes passed through untouched.
+// Match the texture format to the surface's color space. The engine produces
+// sRGB-encoded bytes: an sRGB surface needs an sRGB texture (decoded on sample,
+// re-encoded on write); a non-sRGB (web-colors) surface needs a plain texture
+// so the bytes pass through untouched.
 fn pick_texture_format(surface: wgpu::TextureFormat) -> wgpu::TextureFormat {
     if surface.is_srgb() {
         wgpu::TextureFormat::Rgba8UnormSrgb
@@ -173,10 +176,12 @@ impl shader::Pipeline for WebViewPipeline {
         let texture_format = pick_texture_format(format);
         let (texture, texture_view) = create_texture(device, 1, 1, texture_format);
 
+        // Buffer is rasterized at physical resolution, so it maps ~1:1 to the
+        // surface — nearest-neighbor keeps text crisp instead of resampling.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("webview_sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
@@ -283,7 +288,7 @@ impl<'a> shader::Program<Action> for WebViewShaderProgram<'a> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<shader::Action<Action>> {
-        let size = Size::new(bounds.width as u32, bounds.height as u32);
+        let size = Size::new(bounds.width.round() as u32, bounds.height.round() as u32);
         if state.bounds != size {
             state.bounds = size;
             return Some(shader::Action::publish(Action::Resize(size)));

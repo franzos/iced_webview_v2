@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.10] - 2026-05-26
+
+### Fixed
+- HiDPI text sharpness: webview content now blits 1:1 with the surface (nearest-neighbor sampling + rounded physical sizes) instead of being bilinear-resampled
+- Servo HiDPI: content was rendered at 2× size and upscaled (double-applied the display scale); Servo now paints a physical-resolution buffer matching its hidpi factor
+- Stale/inaccurate code comments around engine render-path routing and texture color space
+
 ## [0.1.9] - 2026-05-25
 
 ### Fixed
