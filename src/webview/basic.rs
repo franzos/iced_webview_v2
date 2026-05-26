@@ -7,7 +7,7 @@ use iced::advanced::{
     self, layout,
     renderer::{self},
     widget::Tree,
-    Clipboard, Layout, Shell, Widget,
+    Layout, Shell, Widget,
 };
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
@@ -583,14 +583,17 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             #[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
             {
                 use crate::webview::shader_widget::WebViewShaderProgram;
-                iced::widget::Shader::new(WebViewShaderProgram::new(
+                let program = WebViewShaderProgram::new(
                     self.engine.get_view(id),
                     self.engine.get_cursor(id),
                     self.scale_observer.clone(),
-                ))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+                );
+                #[cfg(feature = "blitz")]
+                let program = program.with_gpu_frame(self.engine.gpu_frame(id));
+                iced::widget::Shader::new(program)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
             }
             #[cfg(not(any(feature = "servo", feature = "cef", feature = "blitz")))]
             {
@@ -708,7 +711,6 @@ where
                 };
                 renderer.draw_image(
                     core_image::Image::new(self.handle.clone())
-                        .snap(true)
                         .filter_method(core_image::FilterMethod::Nearest),
                     image_bounds,
                     *viewport,
@@ -717,7 +719,6 @@ where
         } else {
             renderer.draw_image(
                 core_image::Image::new(self.handle.clone())
-                    .snap(true)
                     .filter_method(core_image::FilterMethod::Nearest),
                 bounds,
                 *viewport,
@@ -757,7 +758,6 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Action>,
         _viewport: &Rectangle,
     ) {

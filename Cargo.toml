@@ -32,6 +32,7 @@ blitz = [
     "dep:blitz-net",
     "dep:anyrender",
     "dep:anyrender_vello",
+    "dep:vello",
     "dep:peniko",
     "dep:cursor-icon",
     "dep:keyboard-types",
@@ -40,42 +41,44 @@ blitz = [
     "dep:tokio",
 ]
 litehtml = ["dep:litehtml", "dep:reqwest"]
-servo = ["dep:servo", "dep:urlencoding", "dep:rustls", "dep:euclid", "dep:keyboard-types-servo", "dep:dpi", "dep:tokio"]
+# Servo disabled on this branch: its stylo 0.15 conflicts with blitz
+# alpha-4's stylo 0.17 (links = "servo_style_crate"). Lives on main_iced.
+# Kept as an empty placeholder so `#[cfg(feature = "servo")]` sites stay
+# valid until Servo updates upstream and the deps can be reinstated.
+servo = []
 cef = ["dep:cef", "dep:urlencoding"]
 docs_only = []
 
 [dependencies]
-iced = { version = "0.14", features = ["advanced", "image", "tokio", "lazy"] }
+# Pinned to iced `master` (wgpu 29) to align with blitz alpha-4 — enables
+# direct GPU rendering via iced::widget::shader without a CPU readback.
+iced = { git = "https://github.com/iced-rs/iced", rev = "7d83bf20756c", features = ["advanced", "image", "tokio", "lazy", "wgpu"] }
 rand = "0.8.5"
 litehtml = { version = "0.2.5", features = ["pixbuf", "html"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 url = "2.5.2"
 
-# Blitz engine deps (git: stylo 0.15, matching Servo 0.1.0). Bumping blitz
-# to a Stylo 0.16 pin is blocked by Cargo's `links = "servo_style_crate"`
-# rule — only one Stylo crate may exist in the dep graph, even with the
-# `servo` feature inactive. Realign once Servo publishes a Stylo 0.16
-# release.
-blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
-blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
-blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
-anyrender = { version = "0.8", optional = true }
-anyrender_vello = { version = "0.8", optional = true }
+# Blitz 0.3.0-alpha.4 (Stylo 0.17, wgpu 29). The Servo feature stays on the
+# old stylo-0.15 blitz pin elsewhere — they can't coexist due to Cargo's
+# `links = "servo_style_crate"` rule. Build with `--no-default-features
+# --features blitz` on this branch.
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "9ebd23a51a03", optional = true }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "9ebd23a51a03", optional = true }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "9ebd23a51a03", optional = true }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "9ebd23a51a03", optional = true }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "9ebd23a51a03", optional = true }
+anyrender = { version = "0.10", optional = true }
+anyrender_vello = { version = "0.10", optional = true }
+vello = { version = "0.9", default-features = false, features = ["wgpu"], optional = true }
 peniko = { version = "0.6", optional = true }
 cursor-icon = { version = "1", optional = true }
 keyboard-types = { version = "0.7", optional = true }
 smol_str = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt", "sync"], optional = true }
 
-# Servo engine deps
-servo = { version = "0.1", optional = true }
+# Servo engine deps — disabled on this branch (stylo version conflict
+# with blitz alpha-4). Restore alongside the deps when Servo ships stylo 0.17.
 urlencoding = { version = "2", optional = true }
-rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "aws_lc_rs"], optional = true }
-euclid = { version = "0.22", optional = true }
-keyboard-types-servo = { package = "keyboard-types", version = "0.8", optional = true }
-dpi = { version = "0.1", optional = true }
 
 # CEF engine deps
 cef = { version = "145", default-features = false, optional = true }

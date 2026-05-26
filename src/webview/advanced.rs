@@ -7,7 +7,7 @@ use iced::advanced::{
     self, layout,
     renderer::{self},
     widget::Tree,
-    Clipboard, Layout, Shell, Widget,
+    Layout, Shell, Widget,
 };
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
@@ -540,15 +540,18 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
         } else {
             #[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
             {
-                shader::Shader::new(AdvancedShaderProgram::new(
+                let program = AdvancedShaderProgram::new(
                     id,
                     self.engine.get_view(id),
                     self.engine.get_cursor(id),
                     self.scale_observer.clone(),
-                ))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+                );
+                #[cfg(feature = "blitz")]
+                let program = program.with_gpu_frame(self.engine.gpu_frame(id));
+                shader::Shader::new(program)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
             }
             #[cfg(not(any(feature = "servo", feature = "cef", feature = "blitz")))]
             {
@@ -573,6 +576,8 @@ struct AdvancedShaderProgram<'a> {
     image_info: &'a ImageInfo,
     cursor: Interaction,
     scale_observer: Arc<AtomicU32>,
+    #[cfg(feature = "blitz")]
+    gpu_frame: Option<crate::engines::GpuFrameHandle>,
 }
 
 #[cfg(any(feature = "servo", feature = "cef", feature = "blitz"))]
@@ -588,7 +593,15 @@ impl<'a> AdvancedShaderProgram<'a> {
             image_info,
             cursor,
             scale_observer,
+            #[cfg(feature = "blitz")]
+            gpu_frame: None,
         }
+    }
+
+    #[cfg(feature = "blitz")]
+    fn with_gpu_frame(mut self, handle: Option<crate::engines::GpuFrameHandle>) -> Self {
+        self.gpu_frame = handle;
+        self
     }
 }
 
@@ -665,6 +678,8 @@ impl<'a> shader::Program<Action> for AdvancedShaderProgram<'a> {
             width: self.image_info.image_width(),
             height: self.image_info.image_height(),
             scale_observer: self.scale_observer.clone(),
+            #[cfg(feature = "blitz")]
+            gpu_frame: self.gpu_frame.clone(),
         }
     }
 
@@ -757,7 +772,6 @@ where
                 };
                 renderer.draw_image(
                     core_image::Image::new(self.handle.clone())
-                        .snap(true)
                         .filter_method(core_image::FilterMethod::Nearest),
                     image_bounds,
                     *viewport,
@@ -766,7 +780,6 @@ where
         } else {
             renderer.draw_image(
                 core_image::Image::new(self.handle.clone())
-                    .snap(true)
                     .filter_method(core_image::FilterMethod::Nearest),
                 bounds,
                 *viewport,
@@ -804,7 +817,6 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Action>,
         _viewport: &Rectangle,
     ) {

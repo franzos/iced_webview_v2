@@ -1,4 +1,3 @@
-use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -6,11 +5,10 @@ use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::{Point, Size};
 
-use super::{Engine, PageType, ViewId, ViewManager};
+use super::{Engine, GpuFrame, GpuFrameHandle, PageType, ViewId, ViewManager};
 use crate::ImageInfo;
 
-use anyrender::ImageRenderer;
-use anyrender_vello::VelloImageRenderer;
+use anyrender_vello::VelloScenePainter;
 use blitz_dom::{Document, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
@@ -61,6 +59,8 @@ struct BlitzView {
     title: String,
     cursor: Interaction,
     last_frame: ImageInfo,
+    /// Scene published to the shader pipeline. Replaces the CPU pixel readback.
+    gpu_frame: GpuFrameHandle,
     needs_render: bool,
     /// Tracked across CursorMoved events so PointerMove dispatches carry
     /// accurate button state — Blitz uses it to detect drag-selection.
@@ -77,13 +77,12 @@ struct BlitzView {
 /// HTML rendering engine backed by Blitz (Stylo + Taffy + Vello).
 ///
 /// Supports modern CSS (flexbox, grid, Firefox CSS engine via Stylo),
-/// but no JavaScript. Rasterizes on the GPU via `anyrender_vello` and
-/// displays through iced's shader widget.
+/// but no JavaScript. Builds a `vello::Scene` per frame which the shader
+/// widget rasterizes directly using iced's wgpu device — no CPU readback.
 pub struct Blitz {
     views: ViewManager<BlitzView>,
     scale_factor: f32,
     color_scheme: ColorScheme,
-    gpu: GpuRasterizer,
 }
 
 fn detect_color_scheme() -> ColorScheme {
@@ -107,7 +106,6 @@ impl Default for Blitz {
             views: ViewManager::default(),
             scale_factor: 1.0,
             color_scheme: detect_color_scheme(),
-            gpu: GpuRasterizer::new(),
         }
     }
 }
@@ -167,33 +165,9 @@ fn create_document(
     doc
 }
 
-/// Persistent GPU rasterizer shared across all views.
-///
-/// Building a `VelloImageRenderer` triggers full wgpu init plus Vello
-/// pipeline compilation (hundreds of ms), so we keep one alive and resize
-/// it on demand instead of constructing per-frame.
-struct GpuRasterizer {
-    renderer: Option<VelloImageRenderer>,
-    size: (u32, u32),
-    buffer: Vec<u8>,
-}
-
-impl GpuRasterizer {
-    fn new() -> Self {
-        Self {
-            renderer: None,
-            size: (0, 0),
-            buffer: Vec::new(),
-        }
-    }
-}
-
-/// Render the visible viewport to an RGBA pixel buffer.
-///
-/// Only the viewport-sized region is rasterized — `paint_scene` reads
-/// `doc.viewport_scroll()` and offsets content accordingly, so scrolling
-/// is owned by Blitz and the texture stays bounded by window size.
-fn render_view(view: &mut BlitzView, gpu: &mut GpuRasterizer) {
+/// Paint the visible viewport into a `vello::Scene` and publish it for the
+/// shader pipeline to rasterize on iced's wgpu device.
+fn render_view(view: &mut BlitzView) {
     let w = view.size.width;
     let h = view.size.height;
 
@@ -201,56 +175,36 @@ fn render_view(view: &mut BlitzView, gpu: &mut GpuRasterizer) {
         return;
     }
 
+    let Some(doc) = view.document.as_mut() else {
+        view.needs_render = false;
+        return;
+    };
+
     // Apply pending style/layout invalidation (e.g. :hover changes from
     // recent pointer events) before painting. Without this, hover styles
     // wouldn't appear until the next periodic resource resolve tick.
-    if let Some(ref mut doc) = view.document {
-        doc.resolve(0.0);
-    }
-
-    let doc = match view.document.as_ref() {
-        Some(d) => d,
-        None => {
-            view.last_frame = ImageInfo::blank(w, h);
-            view.needs_render = false;
-            return;
-        }
-    };
+    doc.resolve(0.0);
 
     let scale = view.scale as f64;
     let render_w = (w as f64 * scale).round() as u32;
     let render_h = (h as f64 * scale).round() as u32;
 
     if render_w == 0 || render_h == 0 {
-        view.last_frame = ImageInfo::blank(w, h);
         view.needs_render = false;
         return;
     }
 
-    let renderer = gpu
-        .renderer
-        .get_or_insert_with(|| VelloImageRenderer::new(render_w, render_h));
-
-    if gpu.size != (render_w, render_h) {
-        renderer.resize(render_w, render_h);
-        gpu.size = (render_w, render_h);
+    let mut scene = vello::Scene::new();
+    {
+        let mut painter = VelloScenePainter::new(&mut scene);
+        paint_scene(&mut painter, doc, scale, render_w, render_h, 0, 0);
     }
 
-    let expected = (render_w as usize) * (render_h as usize) * 4;
-    gpu.buffer.resize(expected, 0);
-
-    renderer.render(
-        |scene| {
-            paint_scene(scene, doc, scale, render_w, render_h, 0, 0);
-        },
-        &mut gpu.buffer,
-    );
-
-    // Hand the buffer to ImageInfo by move; next frame re-allocates via
-    // `resize`. Avoids a viewport-sized clone here, and from_shader_pixels
-    // avoids the parallel image::Handle clone.
-    let pixels = mem::take(&mut gpu.buffer);
-    view.last_frame = ImageInfo::from_shader_pixels(pixels, render_w, render_h);
+    *view.gpu_frame.lock().unwrap() = Some(GpuFrame {
+        scene,
+        width: render_w,
+        height: render_h,
+    });
     view.needs_render = false;
 }
 
@@ -301,7 +255,7 @@ impl Engine for Blitz {
     fn render(&mut self, _size: Size<u32>) {
         for view in self.views.values_mut() {
             if view.needs_render {
-                render_view(view, &mut self.gpu);
+                render_view(view);
             }
         }
     }
@@ -311,7 +265,7 @@ impl Engine for Blitz {
             return;
         };
         if view.needs_render {
-            render_view(view, &mut self.gpu);
+            render_view(view);
         }
     }
 
@@ -362,6 +316,7 @@ impl Engine for Blitz {
             title: String::new(),
             cursor: Interaction::Idle,
             last_frame: ImageInfo::blank(w, h),
+            gpu_frame: Arc::new(Mutex::new(None)),
             needs_render: true,
             mouse_buttons: MouseEventButtons::None,
             resource_ticks: if has_document {
@@ -373,7 +328,7 @@ impl Engine for Blitz {
             scale: self.scale_factor,
         };
 
-        render_view(&mut view, &mut self.gpu);
+        render_view(&mut view);
         self.views.insert(view)
     }
 
@@ -674,6 +629,10 @@ impl Engine for Blitz {
     fn get_view(&self, id: ViewId) -> &ImageInfo {
         static BLANK: std::sync::LazyLock<ImageInfo> = std::sync::LazyLock::new(ImageInfo::default);
         self.views.get(id).map(|v| &v.last_frame).unwrap_or(&BLANK)
+    }
+
+    fn gpu_frame(&self, id: ViewId) -> Option<GpuFrameHandle> {
+        self.views.get(id).map(|v| Arc::clone(&v.gpu_frame))
     }
 
     fn get_scroll_y(&self, id: ViewId) -> f32 {

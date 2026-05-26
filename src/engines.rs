@@ -1,10 +1,26 @@
 use std::collections::HashMap;
+#[cfg(feature = "blitz")]
+use std::sync::{Arc, Mutex};
 
 use crate::ImageInfo;
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::Point;
 use iced::Size;
+
+/// A blitz-painted scene ready for direct GPU rasterization via iced's wgpu
+/// device. Replaces the CPU pixel readback of the legacy `ImageInfo` path.
+#[cfg(feature = "blitz")]
+pub struct GpuFrame {
+    pub scene: vello::Scene,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Shared slot used by blitz to publish a freshly painted scene and by the
+/// shader pipeline to consume it. Single-producer/single-consumer.
+#[cfg(feature = "blitz")]
+pub type GpuFrameHandle = Arc<Mutex<Option<GpuFrame>>>;
 
 mod view_manager;
 pub use view_manager::ViewManager;
@@ -177,5 +193,12 @@ pub trait Engine {
     /// Return all active view IDs.
     fn view_ids(&self) -> Vec<ViewId> {
         Vec::new()
+    }
+
+    /// GPU-direct paint hook for blitz. When `Some`, the widget renders the
+    /// scene with iced's wgpu device and ignores `get_view().pixels()`.
+    #[cfg(feature = "blitz")]
+    fn gpu_frame(&self, _id: ViewId) -> Option<GpuFrameHandle> {
+        None
     }
 }
