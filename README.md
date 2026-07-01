@@ -2,6 +2,7 @@
 
 [![Rust](https://github.com/franzos/iced_webview_v2/actions/workflows/rust.yml/badge.svg)](https://github.com/franzos/iced_webview_v2/actions/workflows/rust.yml)
 [![crates.io](https://img.shields.io/crates/v/iced_webview_v2.svg)](https://crates.io/crates/iced_webview_v2)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/franzos/iced_webview_v2/badge)](https://scorecard.dev/viewer/?uri=github.com/franzos/iced_webview_v2)
 
 A library to embed Web views in iced applications
 
