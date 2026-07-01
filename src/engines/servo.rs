@@ -429,7 +429,7 @@ impl Engine for Servo {
                     }));
             }
             mouse::Event::WheelScrolled { delta } => {
-                drop(view);
+                let _ = view;
                 self.scroll(id, delta);
             }
             _ => {}
