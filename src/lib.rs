@@ -24,7 +24,8 @@
 //! Then call the usual `view/update` methods — see
 //! [examples](https://github.com/franzos/iced_webview_v2/tree/main/examples) for full working code.
 //!
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use iced::widget::image;
 
@@ -53,13 +54,32 @@ pub(crate) mod util;
 #[cfg(any(feature = "litehtml", feature = "blitz"))]
 pub(crate) mod fetch;
 
+// Monotonic frame counter; lets the shader pipeline skip re-uploading unchanged pixels.
+static FRAME_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn next_generation() -> u64 {
+    FRAME_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A frame's pixel buffer tagged with its generation, for the shader widget path.
+#[cfg_attr(
+    not(any(feature = "servo", feature = "cef", feature = "blitz")),
+    allow(dead_code)
+)]
+#[derive(Clone, Debug)]
+pub struct FramePixels {
+    pub(crate) data: Arc<Vec<u8>>,
+    pub(crate) generation: u64,
+}
+
 /// Image details for passing the view around
 #[derive(Clone, Debug)]
 pub struct ImageInfo {
     width: u32,
     height: u32,
-    handle: image::Handle,
+    handle: Arc<OnceLock<image::Handle>>,
     raw_pixels: Arc<Vec<u8>>,
+    generation: u64,
 }
 
 impl Default for ImageInfo {
@@ -75,40 +95,34 @@ impl ImageInfo {
 
     #[allow(dead_code)]
     fn new(mut pixels: Vec<u8>, format: PixelFormat, width: u32, height: u32) -> Self {
-        // R, G, B, A
-        assert_eq!(pixels.len() % 4, 0);
+        // R, G, B, A: drop any trailing partial pixel from engine data.
+        pixels.truncate(pixels.len() / 4 * 4);
 
         if let PixelFormat::Bgra = format {
-            pixels.chunks_mut(4).for_each(|chunk| chunk.swap(0, 2));
+            pixels
+                .chunks_exact_mut(4)
+                .for_each(|chunk| chunk.swap(0, 2));
         }
 
-        let raw_pixels = Arc::new(pixels);
         Self {
             width,
             height,
-            handle: image::Handle::from_rgba(width, height, (*raw_pixels).clone()),
-            raw_pixels,
-        }
-    }
-
-    /// Construct an `ImageInfo` for the shader-widget rendering path,
-    /// skipping the `image::Handle` allocation. Saves a viewport-sized
-    /// clone per frame for engines that never read `handle`.
-    #[allow(dead_code)]
-    pub(crate) fn from_shader_pixels(pixels: Vec<u8>, width: u32, height: u32) -> Self {
-        debug_assert_eq!(pixels.len() % 4, 0);
-        Self {
-            width,
-            height,
-            // 1×1 placeholder; the shader widget path doesn't read this.
-            handle: image::Handle::from_rgba(1, 1, vec![0u8; 4]),
+            handle: Arc::new(OnceLock::new()),
             raw_pixels: Arc::new(pixels),
+            generation: next_generation(),
         }
     }
 
     /// Get the image handle for direct rendering.
+    ///
+    /// Built lazily on first call: the shader widget path never needs it,
+    /// so engines on that path skip the viewport-sized clone entirely.
     pub fn as_handle(&self) -> image::Handle {
-        self.handle.clone()
+        self.handle
+            .get_or_init(|| {
+                image::Handle::from_rgba(self.width, self.height, (*self.raw_pixels).clone())
+            })
+            .clone()
     }
 
     /// Image width.
@@ -122,23 +136,26 @@ impl ImageInfo {
     }
 
     /// Raw RGBA pixel data for direct GPU upload (shader widget path).
-    pub fn pixels(&self) -> Arc<Vec<u8>> {
-        Arc::clone(&self.raw_pixels)
+    pub fn pixels(&self) -> FramePixels {
+        FramePixels {
+            data: Arc::clone(&self.raw_pixels),
+            generation: self.generation,
+        }
     }
 
     fn blank(width: u32, height: u32) -> Self {
+        // Fall back to 1x1 if the buffer size would overflow usize.
         let (w, h) = (width as usize)
             .checked_mul(height as usize)
             .and_then(|n| n.checked_mul(4))
             .map_or((1u32, 1u32), |_| (width, height));
 
-        let pixels = vec![255; (w as usize * h as usize) * 4];
-        let raw_pixels = Arc::new(pixels.clone());
         Self {
             width: w,
             height: h,
-            handle: image::Handle::from_rgba(w, h, pixels),
-            raw_pixels,
+            handle: Arc::new(OnceLock::new()),
+            raw_pixels: Arc::new(vec![255; w as usize * h as usize * 4]),
+            generation: next_generation(),
         }
     }
 }

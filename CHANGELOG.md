@@ -2,11 +2,34 @@
 
 ## [Unreleased] — `iced_main_blitz_main` branch
 
+### Security
+- Fixed a panic on malformed CSS (`@import` at end of stylesheet) triggerable by remote content
+- Download size limits are enforced while streaming instead of after buffering the whole body
+- Capped images fetched per page (128) and clamped litehtml render height to prevent memory exhaustion from hostile pages
+- Updated dependencies with known advisories (rustls-webpki, quinn-proto, tar, thin-vec)
+- Documented the disabled CEF sandbox and the fetch pipeline's SSRF exposure
+
+### Fixed
+- CEF: initialization is guarded once-per-process; a second engine instance fails cleanly instead of corrupting CEF state
+- Servo: the rendering context is resized with the view; empty frames are logged instead of silently kept stale
+- Page titles are reported for the Blitz and litehtml engines (`on_title_change`)
+- Wrong gamma for CPU-rendered engines on sRGB surfaces (builds without the `blitz` feature)
+- Stale image fetches from a previous page no longer corrupt the current page's fetch tracking
+- litehtml: container access reworked to raw-pointer provenance, removing an aliasing soundness hole
+
 ### Changed
 - Blitz rasterizes directly on iced's `wgpu::Device` via a shared Vello renderer
 - iced pinned to `master`, blitz to `0.3.0-alpha.4` — both on wgpu 29
 - Widget impls migrated to iced master's `Widget` trait (no `Clipboard` param on `update`)
 - Shader texture format switched to linear `Rgba8Unorm`
+- GPU texture upload is skipped when the frame is unchanged; removed a per-frame full-buffer clone on the shader path
+- Errors and warnings go through the `log` crate instead of stderr
+- View IDs use a monotonic counter; the `rand` dependency was removed
+- URL/title polling happens on update ticks and navigation only, not on every input event
+- Stylesheets are fetched concurrently (limit 8) instead of sequentially
+- `Engine` trait: removed unused `focus`/`unfocus` methods and ignored size parameters
+- Added `Servo::try_new`, `Cef::try_new`, and `WebView::with_engine` for fallible engine construction
+- Widget logic duplicated between `basic` and `advanced` moved to an internal shared module
 
 ### Added
 - `engines::GpuFrame` / `GpuFrameHandle` types and `Engine::gpu_frame()` trait method

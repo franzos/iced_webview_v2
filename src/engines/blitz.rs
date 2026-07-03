@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
@@ -65,11 +66,13 @@ struct BlitzView {
     /// Tracked across CursorMoved events so PointerMove dispatches carry
     /// accurate button state — Blitz uses it to detect drag-selection.
     mouse_buttons: MouseEventButtons,
-    /// Number of update ticks to keep draining resources after goto().
-    /// blitz_net fetches sub-resources (images, CSS) asynchronously; we need
-    /// to call resolve() periodically to pick them up. Once the budget runs
-    /// out we stop polling (resolve is expensive for large documents).
-    resource_ticks: u32,
+    /// Deadline for draining resources after goto(). blitz_net fetches
+    /// sub-resources (images, CSS) asynchronously; we need to call resolve()
+    /// periodically to pick them up. Once the deadline passes we stop
+    /// polling (resolve is expensive for large documents).
+    resource_deadline: Option<Instant>,
+    /// Last time resolve() ran during the drain phase.
+    last_resolve: Instant,
     size: Size<u32>,
     scale: f32,
 }
@@ -208,14 +211,21 @@ fn render_view(view: &mut BlitzView) {
     view.needs_render = false;
 }
 
-/// How many update ticks to keep draining resources after goto().
-/// At 10ms per tick this gives ~30s for sub-resources to arrive.
-const RESOURCE_TICK_BUDGET: u32 = 3000;
+/// How long to keep draining resources after goto(), giving sub-resources
+/// ~30s to arrive.
+const RESOURCE_DRAIN_WINDOW: Duration = Duration::from_secs(30);
 
-/// How often (in ticks) to actually call resolve() during the drain phase.
+/// Minimum interval between resolve() calls during the drain phase.
 /// resolve() is expensive (full Stylo + Taffy layout pass), so we throttle it.
-/// At ~10ms per tick, 100 ticks ≈ 1 second between resolve calls.
-const RESOLVE_INTERVAL: u32 = 100;
+const RESOLVE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Extract the `<title>` text. Blitz has no JavaScript, so the title is
+/// fixed once the document is parsed.
+fn document_title(doc: &HtmlDocument) -> String {
+    doc.find_title_node()
+        .map(|node| node.text_content().trim().to_string())
+        .unwrap_or_default()
+}
 
 /// Drain completed resource fetches and re-resolve the document.
 fn drain_and_resolve(view: &mut BlitzView) {
@@ -242,9 +252,14 @@ impl Engine for Blitz {
             if view.redraw_requested.swap(false, Ordering::AcqRel) {
                 view.needs_render = true;
             }
-            if view.resource_ticks > 0 {
-                view.resource_ticks -= 1;
-                if view.resource_ticks % RESOLVE_INTERVAL == 0 {
+            if let Some(deadline) = view.resource_deadline {
+                let now = Instant::now();
+                if now >= deadline {
+                    view.resource_deadline = None;
+                    drain_and_resolve(view);
+                    view.needs_render = true;
+                } else if now.duration_since(view.last_resolve) >= RESOLVE_INTERVAL {
+                    view.last_resolve = now;
                     drain_and_resolve(view);
                     view.needs_render = true;
                 }
@@ -252,7 +267,7 @@ impl Engine for Blitz {
         }
     }
 
-    fn render(&mut self, _size: Size<u32>) {
+    fn render(&mut self) {
         for view in self.views.values_mut() {
             if view.needs_render {
                 render_view(view);
@@ -260,7 +275,7 @@ impl Engine for Blitz {
         }
     }
 
-    fn request_render(&mut self, id: ViewId, _size: Size<u32>) {
+    fn request_render(&mut self, id: ViewId) {
         let Some(view) = self.views.get_mut(id) else {
             return;
         };
@@ -306,6 +321,8 @@ impl Engine for Blitz {
         };
         let has_document = document.is_some();
 
+        let title = document.as_ref().map(document_title).unwrap_or_default();
+
         let mut view = BlitzView {
             document,
             net_provider: net,
@@ -313,17 +330,14 @@ impl Engine for Blitz {
             cursor_icon,
             redraw_requested,
             url,
-            title: String::new(),
+            title,
             cursor: Interaction::Idle,
             last_frame: ImageInfo::blank(w, h),
             gpu_frame: Arc::new(Mutex::new(None)),
             needs_render: true,
             mouse_buttons: MouseEventButtons::None,
-            resource_ticks: if has_document {
-                RESOURCE_TICK_BUDGET
-            } else {
-                0
-            },
+            resource_deadline: has_document.then(|| Instant::now() + RESOURCE_DRAIN_WINDOW),
+            last_resolve: Instant::now(),
             size,
             scale: self.scale_factor,
         };
@@ -343,10 +357,6 @@ impl Engine for Blitz {
     fn view_ids(&self) -> Vec<ViewId> {
         self.views.keys()
     }
-
-    fn focus(&mut self) {}
-
-    fn unfocus(&self) {}
 
     fn resize(&mut self, size: Size<u32>) {
         for view in self.views.values_mut() {
@@ -568,7 +578,7 @@ impl Engine for Blitz {
                 let net = new_net_provider();
                 view.net_provider = Arc::clone(&net);
 
-                view.document = Some(create_document(
+                let doc = create_document(
                     &html,
                     &view.url,
                     &net,
@@ -577,9 +587,12 @@ impl Engine for Blitz {
                     view.size,
                     view.scale,
                     color_scheme,
-                ));
+                );
+                view.title = document_title(&doc);
+                view.document = Some(doc);
                 view.needs_render = true;
-                view.resource_ticks = RESOURCE_TICK_BUDGET;
+                view.resource_deadline = Some(Instant::now() + RESOURCE_DRAIN_WINDOW);
+                view.last_resolve = Instant::now();
             }
             PageType::Url(url) => {
                 view.url = url;

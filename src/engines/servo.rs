@@ -126,10 +126,20 @@ pub struct Servo {
 }
 
 impl Default for Servo {
+    /// Panics if the rendering context cannot be created — see
+    /// [`Servo::try_new`].
     fn default() -> Self {
+        Self::try_new().expect("failed to initialize Servo engine")
+    }
+}
+
+impl Servo {
+    /// Create the Servo engine, returning an error if the software
+    /// rendering context cannot be created.
+    pub fn try_new() -> Result<Self, String> {
         let size = PhysicalSize::new(ImageInfo::WIDTH, ImageInfo::HEIGHT);
-        let rendering_context =
-            SoftwareRenderingContext::new(size).expect("failed to create SoftwareRenderingContext");
+        let rendering_context = SoftwareRenderingContext::new(size)
+            .map_err(|e| format!("failed to create SoftwareRenderingContext: {e:?}"))?;
         let rendering_context = Rc::new(rendering_context);
 
         let notify = Arc::new(Notify::new());
@@ -141,17 +151,15 @@ impl Default for Servo {
             .event_loop_waker(Box::new(waker))
             .build();
 
-        Self {
+        Ok(Self {
             instance,
             rendering_context,
             views: ViewManager::default(),
             scale_factor: 1.0,
             notify,
-        }
+        })
     }
-}
 
-impl Servo {
     /// An iced [`Subscription`] that yields [`Action::Update`] whenever Servo
     /// signals it has work to do, plus a 500ms safety tick so the event loop
     /// still runs if a wake is somehow missed. This replaces the hardcoded
@@ -223,6 +231,10 @@ fn capture_frame(view: &mut ServoView, rendering_context: &SoftwareRenderingCont
     if let Some(image_buf) = rendering_context.read_to_image(rect) {
         let pixels = image_buf.into_raw();
         view.last_frame = ImageInfo::new(pixels, PixelFormat::Rgba, w, h);
+    } else {
+        log::warn!(
+            "iced_webview: servo read_to_image returned no data ({w}x{h}); keeping previous frame"
+        );
     }
 
     view.needs_render = false;
@@ -254,7 +266,7 @@ impl Engine for Servo {
         }
     }
 
-    fn render(&mut self, _size: Size<u32>) {
+    fn render(&mut self) {
         let rc = Rc::clone(&self.rendering_context);
         let scale = self.scale_factor;
         for view in self.views.values_mut() {
@@ -264,7 +276,7 @@ impl Engine for Servo {
         }
     }
 
-    fn request_render(&mut self, id: ViewId, _size: Size<u32>) {
+    fn request_render(&mut self, id: ViewId) {
         let rc = Rc::clone(&self.rendering_context);
         let scale = self.scale_factor;
         let Some(view) = self.views.get_mut(id) else {
@@ -318,6 +330,7 @@ impl Engine for Servo {
             euclid::Scale::<f32, DeviceIndependentPixel, DevicePixel>::new(self.scale_factor),
         );
         let phys = physical_size(size, self.scale_factor);
+        self.rendering_context.resize(phys);
         webview.resize(phys);
 
         let view = ServoView {
@@ -346,20 +359,9 @@ impl Engine for Servo {
         self.views.keys()
     }
 
-    fn focus(&mut self) {
-        if let Some(view) = self.views.values().next() {
-            view.webview.focus();
-        }
-    }
-
-    fn unfocus(&self) {
-        if let Some(view) = self.views.values().next() {
-            view.webview.blur();
-        }
-    }
-
     fn resize(&mut self, size: Size<u32>) {
         let phys = physical_size(size, self.scale_factor);
+        self.rendering_context.resize(phys);
         for view in self.views.values_mut() {
             view.size = size;
             view.webview.resize(phys);
@@ -378,7 +380,9 @@ impl Engine for Servo {
                 DeviceIndependentPixel,
                 DevicePixel,
             >::new(scale));
-            view.webview.resize(physical_size(view.size, scale));
+            let phys = physical_size(view.size, scale);
+            self.rendering_context.resize(phys);
+            view.webview.resize(phys);
             view.needs_render = true;
         }
     }

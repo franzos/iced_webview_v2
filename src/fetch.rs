@@ -1,3 +1,10 @@
+//! Resource fetching for the litehtml/blitz engines.
+//!
+//! SSRF note: fetched URLs come from page content and may target localhost
+//! or private address ranges; redirects are followed. Embedders rendering
+//! untrusted content from privileged network positions should be aware.
+
+use iced::futures::{stream, StreamExt};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use url::Url;
@@ -45,13 +52,14 @@ pub(crate) async fn fetch_html(
         }
     }
 
-    let body = response.bytes().await.map_err(|e| e.to_string())?;
-    if body.len() as u64 > MAX_PAGE_SIZE {
-        return Err(format!(
-            "page too large: {} bytes exceeds {MAX_PAGE_SIZE} byte limit",
-            body.len()
-        ));
-    }
+    let body = read_body_limited(response, MAX_PAGE_SIZE)
+        .await
+        .map_err(|e| match e {
+            ReadBodyError::TooLarge => {
+                format!("page too large: exceeds {MAX_PAGE_SIZE} byte limit")
+            }
+            ReadBodyError::Network(e) => e.to_string(),
+        })?;
     let html = String::from_utf8_lossy(&body).into_owned();
 
     // Pre-fetch external stylesheets into a cache keyed by resolved URL.
@@ -62,11 +70,45 @@ pub(crate) async fn fetch_html(
     } else {
         &links
     };
-    for css_url in capped {
-        fetch_css_recursive(client, css_url, &mut css_cache, 0).await;
+    // Fetch top-level stylesheet bodies concurrently; @import recursion
+    // needs &mut cache, so it stays sequential below.
+    let bodies: Vec<(Url, Option<String>)> = stream::iter(capped.to_vec())
+        .map(|css_url| async move {
+            let css = fetch_css(client, &css_url).await;
+            (css_url, css)
+        })
+        .buffered(8)
+        .collect()
+        .await;
+    for (css_url, css) in bodies {
+        if let Some(css) = css {
+            if !css_cache.contains_key(css_url.as_str()) {
+                process_css(client, &css_url, css, &mut css_cache, 0).await;
+            }
+        }
     }
 
     Ok((html, css_cache))
+}
+
+enum ReadBodyError {
+    TooLarge,
+    Network(reqwest::Error),
+}
+
+/// Read a response body in chunks, aborting once `limit` is exceeded.
+async fn read_body_limited(
+    mut response: reqwest::Response,
+    limit: u64,
+) -> Result<Vec<u8>, ReadBodyError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(ReadBodyError::Network)? {
+        if body.len() as u64 + chunk.len() as u64 > limit {
+            return Err(ReadBodyError::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Fetch a single CSS file and follow @import directives up to MAX_IMPORT_DEPTH.
@@ -86,9 +128,20 @@ async fn fetch_css_recursive(
         None => return,
     };
 
+    process_css(client, url, css, cache, depth).await;
+}
+
+/// Insert fetched CSS into the cache and follow its @import directives.
+async fn process_css(
+    client: &reqwest::Client,
+    url: &Url,
+    css: String,
+    cache: &mut HashMap<String, String>,
+    depth: usize,
+) {
     // Scan for @import before inserting (we need the text)
     let imports = extract_css_imports(&css, url);
-    cache.insert(key, css);
+    cache.insert(url.to_string(), css);
 
     for import_url in imports {
         if cache.len() >= MAX_STYLESHEETS {
@@ -104,10 +157,7 @@ async fn fetch_css(client: &reqwest::Client, url: &Url) -> Option<String> {
     if resp.content_length().is_some_and(|len| len > MAX_CSS_SIZE) {
         return None;
     }
-    let bytes = resp.bytes().await.ok()?;
-    if bytes.len() as u64 > MAX_CSS_SIZE {
-        return None;
-    }
+    let bytes = read_body_limited(resp, MAX_CSS_SIZE).await.ok()?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -144,6 +194,9 @@ fn extract_css_imports(css: &str, base: &Url) -> Vec<Url> {
             }
         }
 
+        if after_ws >= lower.len() {
+            break;
+        }
         pos = after_ws + 1;
     }
 
@@ -210,15 +263,16 @@ pub(crate) async fn fetch_image(url: String) -> Result<Vec<u8>, String> {
         }
     }
 
-    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MAX_IMAGE_SIZE {
-        return Err(format!(
-            "image too large: {} bytes exceeds {MAX_IMAGE_SIZE} byte limit",
-            bytes.len()
-        ));
-    }
+    let bytes = read_body_limited(response, MAX_IMAGE_SIZE)
+        .await
+        .map_err(|e| match e {
+            ReadBodyError::TooLarge => {
+                format!("image too large: exceeds {MAX_IMAGE_SIZE} byte limit")
+            }
+            ReadBodyError::Network(e) => e.to_string(),
+        })?;
 
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 /// Pull the value of a named attribute out of a single HTML tag string.
@@ -238,5 +292,31 @@ fn extract_attr(tag: &str, name: &str) -> Option<String> {
             .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
             .unwrap_or(after.len());
         Some(after[..end].to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn css_imports_trailing_import_does_not_panic() {
+        let base = Url::parse("https://example.com/style.css").unwrap();
+        assert!(extract_css_imports("@import", &base).is_empty());
+        assert!(extract_css_imports("@import ", &base).is_empty());
+    }
+
+    #[test]
+    fn css_imports_resolves_urls() {
+        let base = Url::parse("https://example.com/css/style.css").unwrap();
+        let imports = extract_css_imports("@import url(\"a.css\");\n@import 'b.css';", &base);
+        let urls: Vec<String> = imports.iter().map(Url::to_string).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/css/a.css".to_string(),
+                "https://example.com/css/b.css".to_string(),
+            ]
+        );
     }
 }

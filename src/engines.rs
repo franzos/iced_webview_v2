@@ -69,7 +69,7 @@ pub trait Engine {
     /// Used to do work in the actual browser engine
     fn update(&mut self);
     /// Request a new render pass from the engine
-    fn render(&mut self, size: Size<u32>);
+    fn render(&mut self);
     /// Flush a pending render for a specific view, if one is needed.
     ///
     /// This does **not** force an unconditional render. It only performs the
@@ -77,7 +77,7 @@ pub trait Engine {
     /// by a prior state change (`goto`, `resize`, `refresh`, `update`, etc.).
     /// Callers should treat this as a "render-if-dirty" flush point, not a
     /// "render right now regardless" command.
-    fn request_render(&mut self, id: ViewId, size: Size<u32>);
+    fn request_render(&mut self, id: ViewId);
     /// Creates new a new (possibly blank) view and returns the ViewId to interact with it
     fn new_view(&mut self, size: Size<u32>, content: Option<PageType>) -> ViewId;
     /// Removes desired view
@@ -87,10 +87,6 @@ pub trait Engine {
         false
     }
 
-    /// Focuses webview
-    fn focus(&mut self);
-    /// Unfocuses webview
-    fn unfocus(&self);
     /// Resizes webview
     fn resize(&mut self, size: Size<u32>);
     /// Set the display scale factor for HiDPI rendering. Default is no-op.

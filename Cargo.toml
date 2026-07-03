@@ -49,10 +49,10 @@ docs_only = []
 # Pinned to iced `master` (wgpu 29) to align with blitz alpha-5 — enables
 # direct GPU rendering via iced::widget::shader without a CPU readback.
 iced = { git = "https://github.com/iced-rs/iced", rev = "7d83bf20756c", features = ["advanced", "image", "tokio", "lazy", "wgpu"] }
-rand = "0.8.5"
 litehtml = { version = "0.2.5", features = ["pixbuf", "html"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 url = "2.5.2"
+log = "0.4"
 
 # Blitz 0.3.0-alpha.5 (Stylo 0.18, wgpu 29).
 blitz-dom = { version = "=0.3.0-alpha.5", optional = true }

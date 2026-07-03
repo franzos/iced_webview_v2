@@ -7,7 +7,7 @@ use iced::widget::shader;
 use iced::{keyboard, Event, Point, Rectangle, Size};
 
 use crate::webview::basic::Action;
-use crate::ImageInfo;
+use crate::{FramePixels, ImageInfo};
 
 #[cfg(feature = "blitz")]
 use crate::engines::GpuFrameHandle;
@@ -53,7 +53,7 @@ pub struct ShaderState {
 }
 
 pub struct WebViewPrimitive {
-    pub(crate) pixels: Arc<Vec<u8>>,
+    pub(crate) pixels: FramePixels,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) scale_observer: Arc<AtomicU32>,
@@ -79,6 +79,8 @@ pub struct WebViewPipeline {
     render_pipeline: wgpu::RenderPipeline,
     texture_size: (u32, u32),
     texture_format: wgpu::TextureFormat,
+    /// Generation of the last-uploaded pixel buffer; skips redundant uploads.
+    last_uploaded: Option<u64>,
     /// Vello renderer bound to iced's wgpu device. `Mutex` is needed because
     /// iced's `Pipeline` trait requires `Sync` and `vello::Renderer` contains
     /// internal `RefCell`s. Lock contention is nil — only `prepare` touches it.
@@ -109,16 +111,28 @@ impl WebViewPipeline {
         self.texture = texture;
         self.texture_view = texture_view;
         self.texture_size = (width, height);
+        self.last_uploaded = None;
     }
 }
 
 // Blitz on the GPU path writes via vello (a compute pipeline), which requires
-// STORAGE_BINDING and rules out sRGB-suffixed formats. We always use linear
-// Rgba8Unorm: vello produces linear RGBA, sRGB surfaces re-encode on present.
-// The CPU path (legacy engines) loses its sRGB matching here, acceptable on
-// this PoC branch.
+// STORAGE_BINDING and rules out sRGB-suffixed formats. The pipeline shares one
+// texture between the vello and CPU-pixel paths, so with blitz compiled in we
+// always use linear Rgba8Unorm; the CPU path loses sRGB matching there.
+#[cfg(feature = "blitz")]
 fn pick_texture_format(_surface: wgpu::TextureFormat) -> wgpu::TextureFormat {
     wgpu::TextureFormat::Rgba8Unorm
+}
+
+// Without vello, the CPU-pixel upload holds sRGB-encoded bytes: match the
+// surface so sampling decodes and the render target re-encodes correctly.
+#[cfg(not(feature = "blitz"))]
+fn pick_texture_format(surface: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    if surface.is_srgb() {
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    }
 }
 
 fn create_texture(
@@ -138,9 +152,16 @@ fn create_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::STORAGE_BINDING,
+        usage: {
+            #[allow(unused_mut)]
+            let mut usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+            // vello needs STORAGE_BINDING, which sRGB formats don't support.
+            #[cfg(feature = "blitz")]
+            {
+                usage |= wgpu::TextureUsages::STORAGE_BINDING;
+            }
+            usage
+        },
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -171,8 +192,9 @@ impl shader::Primitive for WebViewPrimitive {
                         pipeline.recreate_texture(device, frame.width, frame.height);
                     }
                     let mut guard = pipeline.vello.lock().unwrap();
-                    let renderer = guard.get_or_insert_with(|| {
-                        vello::Renderer::new(
+                    let renderer = match guard.as_mut() {
+                        Some(renderer) => renderer,
+                        None => match vello::Renderer::new(
                             device,
                             vello::RendererOptions {
                                 use_cpu: false,
@@ -180,23 +202,28 @@ impl shader::Primitive for WebViewPrimitive {
                                 antialiasing_support: vello::AaSupport::area_only(),
                                 pipeline_cache: None,
                             },
-                        )
-                        .expect("vello renderer init")
-                    });
-                    renderer
-                        .render_to_texture(
-                            device,
-                            queue,
-                            &frame.scene,
-                            &pipeline.texture_view,
-                            &vello::RenderParams {
-                                base_color: vello::peniko::Color::TRANSPARENT,
-                                width: frame.width,
-                                height: frame.height,
-                                antialiasing_method: vello::AaConfig::Area,
-                            },
-                        )
-                        .expect("vello render_to_texture");
+                        ) {
+                            Ok(renderer) => guard.insert(renderer),
+                            Err(err) => {
+                                log::error!("iced_webview: vello renderer init failed: {err}");
+                                return;
+                            }
+                        },
+                    };
+                    if let Err(err) = renderer.render_to_texture(
+                        device,
+                        queue,
+                        &frame.scene,
+                        &pipeline.texture_view,
+                        &vello::RenderParams {
+                            base_color: vello::peniko::Color::TRANSPARENT,
+                            width: frame.width,
+                            height: frame.height,
+                            antialiasing_method: vello::AaConfig::Area,
+                        },
+                    ) {
+                        log::warn!("iced_webview: vello render_to_texture failed: {err}");
+                    }
                 }
             }
             return;
@@ -206,8 +233,12 @@ impl shader::Primitive for WebViewPrimitive {
             pipeline.recreate_texture(device, self.width, self.height);
         }
 
+        if pipeline.last_uploaded == Some(self.pixels.generation) {
+            return;
+        }
+
         let expected_len = 4 * self.width as usize * self.height as usize;
-        if self.pixels.len() == expected_len && self.width > 0 && self.height > 0 {
+        if self.pixels.data.len() == expected_len && self.width > 0 && self.height > 0 {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &pipeline.texture,
@@ -215,7 +246,7 @@ impl shader::Primitive for WebViewPrimitive {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &self.pixels,
+                &self.pixels.data,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(4 * self.width),
@@ -227,6 +258,7 @@ impl shader::Primitive for WebViewPrimitive {
                     depth_or_array_layers: 1,
                 },
             );
+            pipeline.last_uploaded = Some(self.pixels.generation);
         }
     }
 
@@ -343,6 +375,7 @@ impl shader::Pipeline for WebViewPipeline {
             render_pipeline,
             texture_size: (1, 1),
             texture_format,
+            last_uploaded: None,
             #[cfg(feature = "blitz")]
             vello: std::sync::Mutex::new(None),
         }
@@ -459,6 +492,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "blitz")]
     #[test]
     fn texture_format_is_linear_for_vello_storage() {
         for surface in [
@@ -471,5 +506,22 @@ mod tests {
                 wgpu::TextureFormat::Rgba8Unorm
             );
         }
+    }
+
+    #[cfg(not(feature = "blitz"))]
+    #[test]
+    fn texture_format_matches_surface_srgbness() {
+        assert_eq!(
+            pick_texture_format(wgpu::TextureFormat::Bgra8UnormSrgb),
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        );
+        assert_eq!(
+            pick_texture_format(wgpu::TextureFormat::Rgba8UnormSrgb),
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        );
+        assert_eq!(
+            pick_texture_format(wgpu::TextureFormat::Bgra8Unorm),
+            wgpu::TextureFormat::Rgba8Unorm
+        );
     }
 }

@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::os::raw::c_int;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
@@ -104,6 +105,12 @@ wrap_render_handler! {
             let Some(len) = (w.checked_mul(h)).and_then(|n| n.checked_mul(4)) else {
                 return;
             };
+            if buffer.is_null() {
+                return;
+            }
+            // SAFETY: buffer is non-null and CEF guarantees it points to
+            // width*height BGRA pixels valid for the duration of this
+            // callback; len is overflow-checked above.
             let pixels = unsafe { std::slice::from_raw_parts(buffer, len) }.to_vec();
             self.shared.borrow_mut().frame_buffer = Some((pixels, width as u32, height as u32));
         }
@@ -201,6 +208,19 @@ struct CefView {
 /// Rendering is off-screen (windowless), producing BGRA pixel buffers that
 /// are uploaded to a persistent GPU texture via iced's shader widget.
 ///
+/// ## Sandbox
+///
+/// The Chromium sandbox is disabled (`no_sandbox`) — renderer processes run
+/// without OS-level isolation, so this engine is not suitable for rendering
+/// untrusted web content as-is.
+///
+/// ## Lifecycle
+///
+/// CEF allows exactly one initialize/shutdown cycle per process, so at most
+/// one `Cef` may ever be constructed. `Default::default()` panics on a
+/// second construction (or any construction after a `Cef` was dropped);
+/// use [`Cef::try_new`] to handle this as an error instead.
+///
 /// ## Subprocess requirement
 ///
 /// CEF uses multi-process mode — helper sub-processes (renderer, GPU,
@@ -227,8 +247,44 @@ pub struct Cef {
     mouse_modifiers: u32,
 }
 
+// One-per-process CEF lifecycle state, guarding initialize/shutdown.
+const CEF_NEVER: u8 = 0;
+const CEF_ALIVE: u8 = 1;
+const CEF_SHUT_DOWN: u8 = 2;
+static CEF_STATE: AtomicU8 = AtomicU8::new(CEF_NEVER);
+
 impl Default for Cef {
+    /// Panics if CEF initialization fails or a `Cef` was already constructed
+    /// in this process — see [`Cef::try_new`].
     fn default() -> Self {
+        Self::try_new().expect("failed to initialize CEF engine")
+    }
+}
+
+impl Cef {
+    /// Create the CEF engine, initializing CEF for this process.
+    ///
+    /// CEF allows exactly one initialize/shutdown cycle per process:
+    /// constructing a second `Cef` while one is alive, or after any `Cef`
+    /// has been dropped, returns an error.
+    pub fn try_new() -> Result<Self, String> {
+        match CEF_STATE.compare_exchange(CEF_NEVER, CEF_ALIVE, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => {}
+            Err(CEF_ALIVE) => {
+                return Err(
+                    "a Cef engine already exists; CEF supports only one initialize per process"
+                        .to_string(),
+                );
+            }
+            Err(_) => {
+                return Err(
+                    "CEF was already shut down; it cannot be re-initialized in this process"
+                        .to_string(),
+                );
+            }
+        }
+
         let _ = api_hash(cef::sys::CEF_API_VERSION_LAST, 0);
         let args = Args::new();
 
@@ -244,7 +300,10 @@ impl Default for Cef {
         // Point CEF to its distribution directory so subprocesses can find
         // libEGL.so, libGLESv2.so, .pak resources, etc. Without this, the
         // GPU process fails to initialize and crashes.
-        let cef_dir = cef::sys::get_cef_dir().expect("CEF distribution directory not found");
+        let Some(cef_dir) = cef::sys::get_cef_dir() else {
+            CEF_STATE.store(CEF_NEVER, Ordering::Release);
+            return Err("CEF distribution directory not found".to_string());
+        };
         let cef_dir_str = cef_dir.to_string_lossy();
 
         let locales_dir = cef_dir.join("locales");
@@ -270,12 +329,21 @@ impl Default for Cef {
             std::ptr::null_mut(),
         );
 
-        Self {
+        if result != 1 {
+            // A failed cef_initialize cannot be safely retried in-process.
+            CEF_STATE.store(CEF_SHUT_DOWN, Ordering::Release);
+            return Err(format!(
+                "CEF initialization failed (cef_initialize returned {result}); \
+                 CEF resources (.pak files, icudtl.dat, locales) may be missing from {cef_dir_str}"
+            ));
+        }
+
+        Ok(Self {
             views: ViewManager::default(),
             scale_factor: 1.0,
             initialized: result == 1,
             mouse_modifiers: 0,
-        }
+        })
     }
 }
 
@@ -292,6 +360,10 @@ fn ensure_cef_lib_path() {
             } else {
                 format!("{cef_dir_str}:{ld_path}")
             };
+            // SAFETY: mutating the environment is only sound before any
+            // other thread exists. Callers are documented to invoke
+            // `cef_subprocess_check` (which calls this) at the very top
+            // of `main()`, while the process is still single-threaded.
             unsafe { std::env::set_var("LD_LIBRARY_PATH", new_path) };
         }
     }
@@ -338,7 +410,10 @@ impl Drop for Cef {
         }
         // Drop all views before calling shutdown so CEF releases its resources.
         self.views = ViewManager::default();
-        shutdown();
+        if self.initialized {
+            shutdown();
+        }
+        CEF_STATE.store(CEF_SHUT_DOWN, Ordering::Release);
     }
 }
 
@@ -394,11 +469,11 @@ impl Engine for Cef {
         }
     }
 
-    fn render(&mut self, _size: Size<u32>) {
+    fn render(&mut self) {
         // CEF renders asynchronously via on_paint — nothing to do here.
     }
 
-    fn request_render(&mut self, _id: ViewId, _size: Size<u32>) {
+    fn request_render(&mut self, _id: ViewId) {
         // CEF renders asynchronously via on_paint — nothing to do here.
     }
 
@@ -481,22 +556,6 @@ impl Engine for Cef {
 
     fn view_ids(&self) -> Vec<ViewId> {
         self.views.keys()
-    }
-
-    fn focus(&mut self) {
-        if let Some(view) = self.views.values().next() {
-            if let Some(host) = view.browser.host() {
-                host.set_focus(1);
-            }
-        }
-    }
-
-    fn unfocus(&self) {
-        if let Some(view) = self.views.values().next() {
-            if let Some(host) = view.browser.host() {
-                host.set_focus(0);
-            }
-        }
     }
 
     fn resize(&mut self, size: Size<u32>) {
