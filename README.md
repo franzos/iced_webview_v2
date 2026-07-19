@@ -8,7 +8,7 @@ A library to embed Web views in iced applications
 This library supports
 - [Blitz] — Rust-native HTML/CSS renderer (Stylo + Taffy + Vello), rasterized directly on iced's wgpu device — no CPU readback. Modern CSS (flexbox, grid), no JS
 - [litehtml] — lightweight CPU-based HTML/CSS rendering, no JS or navigation (good for static content like emails)
-- [Servo] — full browser engine (HTML5, CSS3, JS via SpiderMonkey), rendered to CPU buffer, displayed via iced shader widget *(temporarily disabled on this branch — see Compatibility)*
+- [Servo] — full browser engine (HTML5, CSS3, JS via SpiderMonkey), rendered to CPU buffer, displayed via iced shader widget
 - [CEF] — Chromium Embedded Framework via cef-rs, full Chromium browser compat (HTML5, CSS3, JS)
 
 | Blitz | litehtml | Servo | CEF |
@@ -19,11 +19,11 @@ This library supports
 
 | iced               | iced_webview branch    |
 |--------------------|------------------------|
-| `master` (wgpu 29) | `iced_main_blitz_main` |
+| `master` (wgpu 29) | `next`                 |
 | 0.14               | `main` (0.0.9 – 0.1.x) |
 | 0.13               | 0.0.5                  |
 
-The `iced_main_blitz_main` branch tracks iced `master` and blitz `0.3.0-alpha.4` together — both on wgpu 29 — to enable direct GPU rendering for blitz (Vello renders straight into iced's wgpu texture, no CPU pixel readback). Servo is pinned to stylo 0.15 and conflicts with blitz alpha-4's stylo 0.17, so it's disabled on this branch until Servo updates.
+The `next` branch tracks iced `master` and blitz `0.3.0-alpha.5` together — both on wgpu 29 — to enable direct GPU rendering for blitz (Vello renders straight into iced's wgpu texture, no CPU pixel readback). Servo `0.3` and blitz alpha-5 now share stylo 0.18, so all four engines build together on this branch.
 
 ## Usage
 
@@ -135,7 +135,7 @@ Handled transparently — `webview.view()` returns the right widget type based o
 
 ## Requirements
 
-- Rust 1.90+ (Blitz crates from git use edition 2024, declared MSRV 1.90)
+- Rust 1.90+ (Blitz alpha crates use edition 2024, declared MSRV 1.90)
 - litehtml requires `clang`/`libclang` for building `litehtml-sys`
 - Servo requires `fontconfig`, `make`, `cmake`, `clang` (recent version), and `nasm` at build time
 - CEF downloads the Chromium Embedded Framework binary (~200-300 MB) at build time; requires subprocess handling (see below)
@@ -153,7 +153,7 @@ Handled transparently — `webview.view()` returns the right widget type based o
 
 ### Default engine
 
-The default feature is `litehtml` — it's lightweight, pure-crate.io, and compiles fast. Blitz is a git-only dep and requires `--features blitz` explicitly. Servo is disabled on this branch (see Compatibility).
+The default feature is `litehtml` — it's lightweight, pure-crate.io, and compiles fast. Blitz requires `--features blitz` explicitly, Servo `--features servo`.
 
 #### examples:
 
@@ -211,7 +211,6 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 
 ### Servo
 
-- **Git-only dependency** — `libservo` is not on crates.io, so the `servo` feature cannot be published. Build from git only.
 - **Large binary** — adds 50-150+ MB to the final binary due to SpiderMonkey and Servo's full rendering pipeline.
 - **System deps** — needs `fontconfig`, `make`, `cmake`, `clang` (recent version), and `nasm` at build time.
 - **Text selection** — Servo manages text selection and clipboard (Ctrl+C/V) internally, but the selection is not queryable from the embedding API (`get_selected_text()` returns None).
@@ -229,7 +228,6 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 ## TODO
 
 - ~~**Blitz zero-copy GPU rendering**~~ — done on this branch. Blitz's `vello::Scene` is rasterized directly on iced's `wgpu::Device`.
-- **Re-enable Servo** — Servo currently pins stylo 0.15, which conflicts with blitz alpha-4's stylo 0.17. Restore once Servo updates upstream.
 - **Color correctness on `Unorm` swapchains** — texture format is forced to linear `Rgba8Unorm` for vello compute output. CEF/litehtml CPU bytes are sRGB-encoded and will look slightly off on non-sRGB swapchains. Fix shape: declare `view_formats: &[Rgba8Unorm, Rgba8UnormSrgb]` and create the right sample view per path.
 - **Recycle `vello::Scene`** — switch the handle from `Arc<Mutex<Option<Scene>>>` to `Arc<Mutex<Scene>>` + dirty flag, call `Scene::reset()` before each paint. Eliminates per-frame allocation churn (microseconds, only matters at sustained 60 fps).
 - **Blitz incremental layout** — `blitz-dom` has a feature-gated `incremental` flag that enables selective cache clearing and damage propagation in `resolve()`. Currently experimental (incomplete FC root detection, no tests), but once stabilized it would make re-layout after hover/resource loads much cheaper by only updating affected subtrees instead of the full tree.
@@ -256,7 +254,7 @@ Blitz and litehtml are not full browsers — there's no JavaScript, and renderin
 | **Rendering path** | Direct GPU (Vello on iced's wgpu device) | iced image Handle | iced shader widget (CPU pixels uploaded) | iced shader widget (CPU pixels uploaded) |
 | **Incremental rendering** | No (experimental flag exists) | No | Yes | Yes |
 | **Navigation history** | No | No | Yes | Yes |
-| **Build deps** | Pure Rust | C++ (`clang`/`libclang`) | Rust + system deps (git-only) | C++ (CEF binary download) |
+| **Build deps** | Pure Rust | C++ (`clang`/`libclang`) | Rust + system deps | C++ (CEF binary download) |
 | **Rendering performance** | Good (Vello GPU, viewport-only repaint, no CPU readback) | Moderate | Best (full rendering pipeline) | Best (full Chromium pipeline) |
 | **Binary size impact** | Moderate | Small | Large (50-150+ MB) | Large (~200-300 MB runtime) |
 | **License** | MIT/Apache-2.0 + MPL-2.0 (Stylo) | MIT + BSD-3-Clause | MPL-2.0 | Apache-2.0 (this crate) + BSD (CEF) |
