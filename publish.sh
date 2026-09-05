@@ -13,7 +13,8 @@ trap 'mv Cargo.toml.bak Cargo.toml' EXIT
 # Remove blitz feature block (multi-line: "blitz = [" through "]")
 sed -i '/^blitz = \[$/,/^\]$/d' Cargo.toml
 
-# Remove servo feature line
+# Remove blitz-vello-cpu and servo feature lines
+sed -i '/^blitz-vello-cpu = \[/d' Cargo.toml
 sed -i '/^servo = \[/d' Cargo.toml
 
 # --- Dependencies ---
@@ -28,6 +29,7 @@ sed -i '/^blitz-net = {/d' Cargo.toml
 
 # Blitz crates.io deps (only used by blitz feature)
 sed -i '/^anyrender = {/d' Cargo.toml
+sed -i '/^anyrender_vello = {/d' Cargo.toml
 sed -i '/^anyrender_vello_cpu = {/d' Cargo.toml
 sed -i '/^peniko = {/d' Cargo.toml
 sed -i '/^cursor-icon = {/d' Cargo.toml
