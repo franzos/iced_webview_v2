@@ -19,7 +19,7 @@
 
 ### Changed
 - Blitz rasterizes directly on iced's `wgpu::Device` via a shared Vello renderer
-- iced pinned to `master`, blitz to `0.3.0-alpha.4` — both on wgpu 29
+- iced pinned to `master`, blitz to `0.3.0-beta.2`, Servo to `0.5` (stylo 0.20, wgpu 29)
 - Widget impls migrated to iced master's `Widget` trait (no `Clipboard` param on `update`)
 - Shader texture format switched to linear `Rgba8Unorm`
 - GPU texture upload is skipped when the frame is unchanged; removed a per-frame full-buffer clone on the shader path
@@ -35,7 +35,6 @@
 - `engines::GpuFrame` / `GpuFrameHandle` types and `Engine::gpu_frame()` trait method
 
 ### Removed
-- `servo` feature — disabled until Servo updates to stylo 0.17 (conflicts with blitz alpha-4 via `links = "servo_style_crate"`)
 - `GpuRasterizer` / `VelloImageRenderer` CPU-buffer path in the blitz engine
 
 ## [0.1.11] - 2026-05-26

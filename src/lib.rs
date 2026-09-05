@@ -100,7 +100,9 @@ impl ImageInfo {
 
         if let PixelFormat::Bgra = format {
             pixels
-                .chunks_exact_mut(4)
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
                 .for_each(|chunk| chunk.swap(0, 2));
         }
 

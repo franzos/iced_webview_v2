@@ -12,6 +12,7 @@ pub(crate) fn html_escape(s: &str) -> String {
 /// 1. Parse `src` as absolute URL
 /// 2. Resolve against `baseurl` (e.g. stylesheet URL)
 /// 3. Resolve against `page_url`
+#[cfg(any(feature = "litehtml", feature = "blitz"))]
 pub(crate) fn resolve_url(
     src: &str,
     baseurl: &str,

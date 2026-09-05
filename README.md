@@ -23,7 +23,7 @@ This library supports
 | 0.14               | `main` (0.0.9 – 0.1.x) |
 | 0.13               | 0.0.5                  |
 
-The `next` branch tracks iced `master` and blitz `0.3.0-alpha.5` together — both on wgpu 29 — to enable direct GPU rendering for blitz (Vello renders straight into iced's wgpu texture, no CPU pixel readback). Servo `0.3` and blitz alpha-5 now share stylo 0.18, so all four engines build together on this branch.
+The `next` branch tracks iced `master` and blitz `0.3.0-beta.2` together - both on wgpu 29 - to enable direct GPU rendering for blitz (Vello renders straight into iced's wgpu texture, no CPU pixel readback). Servo `0.5` and blitz beta-2 share stylo 0.20, so all four engines build together on this branch.
 
 ## Usage
 

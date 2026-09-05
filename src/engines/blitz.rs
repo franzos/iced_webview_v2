@@ -41,8 +41,8 @@ struct WebviewShell {
 }
 
 impl ShellProvider for WebviewShell {
-    fn set_cursor(&self, icon: CursorIcon) {
-        *self.cursor.lock().unwrap() = icon;
+    fn set_cursor(&self, icon: Option<CursorIcon>) {
+        *self.cursor.lock().unwrap() = icon.unwrap_or_default();
     }
 
     fn request_redraw(&self) {
@@ -450,6 +450,8 @@ impl Engine for Blitz {
                         buttons,
                         mods: Modifiers::empty(),
                         details: PointerDetails::default(),
+                        element: Default::default(),
+                        active_pointers: Default::default(),
                     }));
                 }
             }
@@ -477,6 +479,8 @@ impl Engine for Blitz {
                         buttons,
                         mods: Modifiers::empty(),
                         details: PointerDetails::default(),
+                        element: Default::default(),
+                        active_pointers: Default::default(),
                     }));
                 }
                 let doc_cursor = view.document.as_ref().and_then(|d| d.get_cursor());
@@ -519,6 +523,8 @@ impl Engine for Blitz {
                         buttons,
                         mods: Modifiers::empty(),
                         details: PointerDetails::default(),
+                        element: Default::default(),
+                        active_pointers: Default::default(),
                     }));
                 }
             }
@@ -560,6 +566,7 @@ impl Engine for Blitz {
             },
             buttons: MouseEventButtons::None,
             mods: Modifiers::empty(),
+            element: Default::default(),
         }));
     }
 

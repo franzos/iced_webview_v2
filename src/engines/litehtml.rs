@@ -499,7 +499,7 @@ fn render_view(view: &mut LitehtmlView) {
 /// litehtml's pixbuf backend (tiny-skia) stores premultiplied RGBA, but
 /// iced's `image::Handle::from_rgba` expects straight (unpremultiplied) alpha.
 fn unpremultiply_rgba(pixels: &mut [u8]) {
-    for chunk in pixels.chunks_exact_mut(4) {
+    for chunk in pixels.as_chunks_mut::<4>().0 {
         let a = chunk[3] as u32;
         for c in &mut chunk[..3] {
             *c = (*c as u32 * 255 + a / 2)
