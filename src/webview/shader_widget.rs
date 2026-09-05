@@ -7,7 +7,7 @@ use iced::widget::shader;
 use iced::{keyboard, Event, Point, Rectangle, Size};
 
 use crate::webview::basic::Action;
-use crate::ImageInfo;
+use crate::{FramePixels, ImageInfo};
 
 /// Shader-based rendering for servo webview content.
 ///
@@ -40,7 +40,7 @@ pub struct ShaderState {
 }
 
 pub struct WebViewPrimitive {
-    pub(crate) pixels: Arc<Vec<u8>>,
+    pub(crate) pixels: FramePixels,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) scale_observer: Arc<AtomicU32>,
@@ -64,6 +64,8 @@ pub struct WebViewPipeline {
     render_pipeline: wgpu::RenderPipeline,
     texture_size: (u32, u32),
     texture_format: wgpu::TextureFormat,
+    /// Generation of the last-uploaded pixel buffer; skips redundant uploads.
+    last_uploaded: Option<u64>,
 }
 
 impl WebViewPipeline {
@@ -89,6 +91,7 @@ impl WebViewPipeline {
         self.texture = texture;
         self.texture_view = texture_view;
         self.texture_size = (width, height);
+        self.last_uploaded = None;
     }
 }
 
@@ -148,8 +151,12 @@ impl shader::Primitive for WebViewPrimitive {
             pipeline.recreate_texture(device, self.width, self.height);
         }
 
+        if pipeline.last_uploaded == Some(self.pixels.generation) {
+            return;
+        }
+
         let expected_len = 4 * self.width as usize * self.height as usize;
-        if self.pixels.len() == expected_len && self.width > 0 && self.height > 0 {
+        if self.pixels.data.len() == expected_len && self.width > 0 && self.height > 0 {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &pipeline.texture,
@@ -157,7 +164,7 @@ impl shader::Primitive for WebViewPrimitive {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &self.pixels,
+                &self.pixels.data,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(4 * self.width),
@@ -169,6 +176,7 @@ impl shader::Primitive for WebViewPrimitive {
                     depth_or_array_layers: 1,
                 },
             );
+            pipeline.last_uploaded = Some(self.pixels.generation);
         }
     }
 
@@ -285,6 +293,7 @@ impl shader::Pipeline for WebViewPipeline {
             render_pipeline,
             texture_size: (1, 1),
             texture_format,
+            last_uploaded: None,
         }
     }
 }

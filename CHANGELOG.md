@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.12] - 2026-09-05
+
+### Security
+- Panic on malformed CSS (`@import` at end of stylesheet) from remote content
+- Download size limit enforced while streaming, not after buffering
+- Max 128 images per page; litehtml render height clamped
+- CEF sandbox status and fetch SSRF exposure documented
+- Dependency refresh: crossbeam-epoch, h2, quick-xml advisories cleared (remaining ones come from Servo 0.1)
+
+### Fixed
+- CEF: one init per process; a second engine instance fails cleanly
+- Servo: rendering context resized with the view; empty frames logged
+- `on_title_change` for Blitz and litehtml
+- Image fetches from a previous page no longer affect the current page
+- litehtml: container access via raw-pointer provenance (aliasing soundness hole)
+
+### Changed
+- Shader path: unchanged frames skip the texture upload; no per-frame buffer clone
+- Logging via `log` instead of stderr
+- View IDs from a monotonic counter; `rand` dependency dropped
+- URL/title polling on update ticks and navigation only
+- Stylesheets fetched concurrently (limit 8)
+- `Engine` trait: `focus`/`unfocus` and unused size parameters removed
+- `Servo::try_new`, `Cef::try_new`, `WebView::with_engine`
+- Shared widget logic moved out of `basic`/`advanced` into one internal module
+
 ## [0.1.11] - 2026-05-26
 
 ### Fixed

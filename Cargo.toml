@@ -1,6 +1,6 @@
 [package]
 name = "iced_webview_v2"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 rust-version = "1.90.0"
 description = "An easily embedded webview library for iced"
@@ -46,10 +46,10 @@ docs_only = []
 
 [dependencies]
 iced = { version = "0.14", features = ["advanced", "image", "tokio", "lazy"] }
-rand = "0.8.5"
 litehtml = { version = "0.2.5", features = ["pixbuf", "html"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 url = "2.5.2"
+log = "0.4"
 
 # Blitz engine deps (git: stylo 0.15, matching Servo 0.1.0). Bumping blitz
 # to a Stylo 0.16 pin is blocked by Cargo's `links = "servo_style_crate"`

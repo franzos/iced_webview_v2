@@ -15,6 +15,7 @@ use iced::{Element, Point, Size, Task};
 use iced::{Event, Length, Rectangle};
 use url::Url;
 
+use crate::webview::{common, ON_ACTION_REQUIRED};
 use crate::{engines, ImageInfo, PageType, ViewId};
 
 #[allow(missing_docs)]
@@ -42,6 +43,7 @@ pub enum Action {
     CopySelection,
     /// Internal: carries the result of a URL fetch for engines without native URL support.
     /// On success returns `(html, css_cache)`.
+    #[doc(hidden)]
     FetchComplete(
         ViewId,
         String,
@@ -51,8 +53,10 @@ pub enum Action {
     /// The bool is `redraw_on_ready` — when true, the image doesn't affect
     /// layout so `doc.render()` can be skipped (redraw only).
     /// The u64 is the navigation epoch — stale results are discarded.
+    #[doc(hidden)]
     ImageFetchComplete(ViewId, String, Result<Vec<u8>, String>, bool, u64),
     /// Internal: carries the window scale factor queried from iced.
+    #[doc(hidden)]
     SetScaleFactor(f32),
 }
 
@@ -89,6 +93,8 @@ where
     /// flushed (triggering an expensive redraw) once this reaches zero, so
     /// a burst of images causes only one redraw instead of one per image.
     inflight_images: usize,
+    /// Images fetched for the current navigation; capped at `MAX_IMAGES`.
+    fetched_images: usize,
     /// Per-view navigation epoch. Incremented on `GoToUrl` so that image
     /// fetches spawned for a previous page are discarded when they complete.
     nav_epochs: HashMap<ViewId, u64>,
@@ -113,8 +119,16 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
     for WebView<Engine, Message>
 {
     fn default() -> Self {
+        Self::with_engine(Engine::default())
+    }
+}
+
+impl<Engine: engines::Engine, Message: Send + Clone + 'static> WebView<Engine, Message> {
+    /// Create a webview widget from a pre-built engine instance, e.g. one
+    /// constructed fallibly via the engine's `try_new()`.
+    pub fn with_engine(engine: Engine) -> Self {
         WebView {
-            engine: Engine::default(),
+            engine,
             view_size: Size {
                 width: 1920,
                 height: 1080,
@@ -131,6 +145,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> Default
             on_copy: None,
             action_mapper: None,
             inflight_images: 0,
+            fetched_images: 0,
             nav_epochs: HashMap::new(),
             scale_observer: Arc::new(AtomicU32::new(0)),
         }
@@ -156,14 +171,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     }
 
     fn query_scale_factor(&self) -> Task<Message> {
-        if let Some(mapper) = &self.action_mapper {
-            let mapper = mapper.clone();
-            iced::window::latest()
-                .and_then(iced::window::scale_factor)
-                .map(move |f| mapper(Action::SetScaleFactor(f)))
-        } else {
-            Task::none()
-        }
+        common::query_scale_factor(&self.action_mapper, Action::SetScaleFactor)
     }
 
     /// subscribe to create view events
@@ -219,19 +227,31 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
     pub fn update(&mut self, action: Action) -> Task<Message> {
         let mut tasks = Vec::new();
 
-        if let Some(view_id) = self.get_current_view_id() {
-            if let Some(on_url_change) = &self.on_url_change {
-                let url = self.engine.get_url(view_id);
-                if self.url != url {
-                    tasks.push(Task::done(on_url_change(url.clone())));
-                    self.url = url;
+        // Poll only on ticks and navigation actions, not per-event actions
+        // like SendMouseEvent (get_url/get_title can be FFI calls).
+        if matches!(
+            action,
+            Action::Update
+                | Action::GoToUrl(_)
+                | Action::GoBackward
+                | Action::GoForward
+                | Action::Refresh
+                | Action::FetchComplete(..)
+        ) {
+            if let Some(view_id) = self.get_current_view_id() {
+                if let Some(on_url_change) = &self.on_url_change {
+                    let url = self.engine.get_url(view_id);
+                    if self.url != url {
+                        tasks.push(Task::done(on_url_change(url.clone())));
+                        self.url = url;
+                    }
                 }
-            }
-            if let Some(on_title_change) = &self.on_title_change {
-                let title = self.engine.get_title(view_id);
-                if self.title != title {
-                    tasks.push(Task::done(on_title_change(title.clone())));
-                    self.title = title;
+                if let Some(on_title_change) = &self.on_title_change {
+                    let title = self.engine.get_title(view_id);
+                    if self.title != title {
+                        tasks.push(Task::done(on_title_change(title.clone())));
+                        self.title = title;
+                    }
                 }
             }
         }
@@ -240,10 +260,10 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             Action::ChangeView(index) => {
                 if let Some(view_id) = self.index_as_view_id(index) {
                     self.current_view_index = Some(index as usize);
-                    self.engine.request_render(view_id, self.view_size);
+                    self.engine.request_render(view_id);
                     tasks.push(self.query_scale_factor());
                 } else {
-                    eprintln!(
+                    log::error!(
                         "iced_webview: ChangeView index {} is invalid or already closed",
                         index
                     );
@@ -259,7 +279,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                             tasks.push(Task::done(on_view_close.clone()));
                         }
                     } else {
-                        eprintln!(
+                        log::error!(
                             "iced_webview: CloseCurrentView failed — view index {} is stale",
                             idx
                         );
@@ -285,7 +305,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                         tasks.push(Task::done(on_view_close.clone()))
                     }
                 } else {
-                    eprintln!(
+                    log::error!(
                         "iced_webview: CloseView index {} is invalid or already closed",
                         index
                     );
@@ -300,18 +320,18 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
 
                         #[cfg(any(feature = "litehtml", feature = "blitz"))]
                         if let Some(mapper) = &self.action_mapper {
-                            let mapper = mapper.clone();
-                            let url_clone = url.clone();
-                            tasks.push(Task::perform(
-                                crate::fetch::fetch_html(url),
-                                move |result| mapper(Action::FetchComplete(id, url_clone, result)),
+                            tasks.push(common::fetch_html_task(
+                                id,
+                                url,
+                                mapper.clone(),
+                                Action::FetchComplete,
                             ));
                         } else {
-                            eprintln!("iced_webview: .on_action() is required for URL navigation and image loading when the engine does not handle URLs natively. Call .on_action(Message::YourVariant) on your WebView builder.");
+                            log::error!("{ON_ACTION_REQUIRED}");
                         }
 
                         #[cfg(not(any(feature = "litehtml", feature = "blitz")))]
-                        eprintln!("iced_webview: .on_action() is required for URL navigation and image loading when the engine does not handle URLs natively. Call .on_action(Message::YourVariant) on your WebView builder.");
+                        log::error!("{ON_ACTION_REQUIRED}");
                     } else {
                         let id = self
                             .engine
@@ -340,31 +360,32 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             }
             Action::GoToUrl(url) => {
                 if let Some(view_id) = self.get_current_view_id() {
-                    self.inflight_images = 0;
-                    let epoch = self.nav_epochs.entry(view_id).or_insert(0);
-                    *epoch = epoch.wrapping_add(1);
+                    common::begin_navigation(
+                        &mut self.nav_epochs,
+                        &mut self.inflight_images,
+                        &mut self.fetched_images,
+                        view_id,
+                    );
                     let url_str = url.to_string();
                     self.engine.goto(view_id, PageType::Url(url_str.clone()));
 
                     #[cfg(any(feature = "litehtml", feature = "blitz"))]
                     if !self.engine.handles_urls() {
                         if let Some(mapper) = &self.action_mapper {
-                            let mapper = mapper.clone();
-                            let fetch_url = url_str.clone();
-                            tasks.push(Task::perform(
-                                crate::fetch::fetch_html(fetch_url),
-                                move |result| {
-                                    mapper(Action::FetchComplete(view_id, url_str, result))
-                                },
+                            tasks.push(common::fetch_html_task(
+                                view_id,
+                                url_str,
+                                mapper.clone(),
+                                Action::FetchComplete,
                             ));
                         } else {
-                            eprintln!("iced_webview: .on_action() is required for URL navigation and image loading when the engine does not handle URLs natively. Call .on_action(Message::YourVariant) on your WebView builder.");
+                            log::error!("{ON_ACTION_REQUIRED}");
                         }
                     }
 
                     #[cfg(not(any(feature = "litehtml", feature = "blitz")))]
                     if !self.engine.handles_urls() {
-                        eprintln!("iced_webview: .on_action() is required for URL navigation and image loading when the engine does not handle URLs natively. Call .on_action(Message::YourVariant) on your WebView builder.");
+                        log::error!("{ON_ACTION_REQUIRED}");
                     }
                 }
             }
@@ -385,32 +406,14 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     // Check if the click triggered an anchor navigation
                     if let Some(href) = self.engine.take_anchor_click(view_id) {
                         let current = self.engine.get_url(view_id);
-                        let base = Url::parse(&current).ok();
-                        match Url::parse(&href).or_else(|_| {
-                            base.as_ref()
-                                .ok_or(url::ParseError::RelativeUrlWithoutBase)
-                                .and_then(|b| b.join(&href))
-                        }) {
-                            Ok(resolved) => {
-                                let scheme = resolved.scheme();
-                                if scheme == "http" || scheme == "https" {
-                                    let is_same_page = base.as_ref().is_some_and(|cur| {
-                                        crate::util::is_same_page(&resolved, cur)
-                                    });
-                                    if is_same_page {
-                                        if let Some(fragment) = resolved.fragment() {
-                                            self.engine.scroll_to_fragment(view_id, fragment);
-                                        }
-                                    } else {
-                                        tasks.push(self.update(Action::GoToUrl(resolved)));
-                                    }
-                                }
+                        match common::resolve_anchor_click(&href, &current) {
+                            Some(common::AnchorTarget::Fragment(fragment)) => {
+                                self.engine.scroll_to_fragment(view_id, &fragment);
                             }
-                            Err(e) => {
-                                eprintln!(
-                                    "iced_webview: failed to resolve anchor URL '{href}': {e}"
-                                );
+                            Some(common::AnchorTarget::Navigate(resolved)) => {
+                                tasks.push(self.update(Action::GoToUrl(resolved)));
                             }
+                            None => {}
                         }
                     }
                 }
@@ -430,7 +433,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 }
 
                 if let Some(view_id) = self.get_current_view_id() {
-                    self.engine.request_render(view_id, self.view_size);
+                    self.engine.request_render(view_id);
 
                     // Flush staged images only when all fetches are done,
                     // so the entire batch is drawn in one pass.
@@ -442,37 +445,15 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 // Discover images that need fetching after layout
                 #[cfg(any(feature = "litehtml", feature = "blitz"))]
                 if let Some(mapper) = &self.action_mapper {
-                    let pending = self.engine.take_pending_images();
-                    for (view_id, src, baseurl, redraw_on_ready) in pending {
-                        let page_url = self.engine.get_url(view_id);
-                        // Resolve against the baseurl context (e.g. stylesheet URL),
-                        // falling back to the page URL.
-                        let resolved = crate::util::resolve_url(&src, &baseurl, &page_url);
-                        let resolved = match resolved {
-                            Ok(u) => u,
-                            Err(_) => continue,
-                        };
-                        let scheme = resolved.scheme();
-                        if scheme != "http" && scheme != "https" {
-                            continue;
-                        }
-                        self.inflight_images += 1;
-                        let mapper = mapper.clone();
-                        let raw_src = src.clone();
-                        let epoch = *self.nav_epochs.get(&view_id).unwrap_or(&0);
-                        tasks.push(Task::perform(
-                            crate::fetch::fetch_image(resolved.to_string()),
-                            move |result| {
-                                mapper(Action::ImageFetchComplete(
-                                    view_id,
-                                    raw_src,
-                                    result,
-                                    redraw_on_ready,
-                                    epoch,
-                                ))
-                            },
-                        ));
-                    }
+                    common::dispatch_image_fetches(
+                        &mut self.engine,
+                        &self.nav_epochs,
+                        &mut self.fetched_images,
+                        &mut self.inflight_images,
+                        mapper,
+                        Action::ImageFetchComplete,
+                        &mut tasks,
+                    );
                 }
 
                 return Task::batch(tasks);
@@ -483,9 +464,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                     self.engine.resize(size);
                     tasks.push(self.query_scale_factor());
                 } else {
-                    // No-op resize (published every frame because the widget
-                    // is recreated with bounds 0,0). Skip request_render to
-                    // avoid texture churn during scrolling.
+                    // No-op resize: skip request_render to avoid texture churn.
                     return Task::batch(tasks);
                 }
             }
@@ -500,46 +479,21 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 return Task::batch(tasks);
             }
             Action::FetchComplete(view_id, url, result) => {
-                if !self.engine.has_view(view_id) {
+                if !common::handle_fetch_complete(&mut self.engine, view_id, &url, result) {
                     return Task::batch(tasks);
-                }
-                match result {
-                    Ok((html, css_cache)) => {
-                        self.engine.set_css_cache(view_id, css_cache);
-                        self.engine.goto(view_id, PageType::Html(html));
-                    }
-                    Err(e) => {
-                        let error_html = format!(
-                            "<html><body><h1>Failed to load</h1><p>{}</p><p>{}</p></body></html>",
-                            crate::util::html_escape(&url),
-                            crate::util::html_escape(&e),
-                        );
-                        self.engine.goto(view_id, PageType::Html(error_html));
-                    }
                 }
             }
             Action::ImageFetchComplete(view_id, src, result, redraw_on_ready, epoch) => {
-                self.inflight_images = self.inflight_images.saturating_sub(1);
-                let current_epoch = *self.nav_epochs.get(&view_id).unwrap_or(&0);
-                if epoch != current_epoch {
-                    // Stale fetch from a previous navigation — discard.
-                    return Task::batch(tasks);
-                }
-                if self.engine.has_view(view_id) {
-                    match &result {
-                        Ok(bytes) => {
-                            self.engine.load_image_from_bytes(
-                                view_id,
-                                &src,
-                                bytes,
-                                redraw_on_ready,
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("iced_webview: failed to fetch image '{}': {}", src, e);
-                        }
-                    }
-                }
+                common::handle_image_fetch_complete(
+                    &mut self.engine,
+                    &self.nav_epochs,
+                    &mut self.inflight_images,
+                    view_id,
+                    &src,
+                    &result,
+                    redraw_on_ready,
+                    epoch,
+                );
                 // Don't call request_render here — the periodic Update tick
                 // picks up staged images via request_render's staged check.
                 return Task::batch(tasks);
@@ -550,7 +504,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
         };
 
         if let Some(view_id) = self.get_current_view_id() {
-            self.engine.request_render(view_id, self.view_size);
+            self.engine.request_render(view_id);
         }
 
         Task::batch(tasks)
@@ -569,6 +523,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             // Handle widget and scroll by y-offset. (blitz/servo report height 0
             // and take the shader path below.)
             WebViewWidget::new(
+                self.view_size,
                 self.engine.get_view(id),
                 self.engine.get_cursor(id),
                 self.engine.get_selection_rects(id),
@@ -595,6 +550,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
             #[cfg(not(any(feature = "servo", feature = "cef", feature = "blitz")))]
             {
                 WebViewWidget::new(
+                    self.view_size,
                     self.engine.get_view(id),
                     self.engine.get_cursor(id),
                     self.engine.get_selection_rects(id),
@@ -645,6 +601,7 @@ struct WebViewWidget<'a> {
 
 impl<'a> WebViewWidget<'a> {
     fn new(
+        bounds: Size<u32>,
         image_info: &ImageInfo,
         cursor: Interaction,
         selection_rects: &'a [[f32; 4]],
@@ -654,7 +611,7 @@ impl<'a> WebViewWidget<'a> {
         Self {
             handle: image_info.as_handle(),
             cursor,
-            bounds: Size::new(0, 0),
+            bounds,
             selection_rects,
             scroll_y,
             content_height,

@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::ViewId;
+
+static NEXT_VIEW_ID: AtomicUsize = AtomicUsize::new(0);
 
 pub struct ViewManager<V> {
     views: HashMap<ViewId, V>,
@@ -24,7 +27,7 @@ impl<V> ViewManager<V> {
     }
 
     pub fn insert(&mut self, view: V) -> ViewId {
-        let id = rand::random::<ViewId>();
+        let id = NEXT_VIEW_ID.fetch_add(1, Ordering::Relaxed);
         self.views.insert(id, view);
         id
     }
