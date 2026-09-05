@@ -16,6 +16,7 @@ use crate::{FramePixels, ImageInfo};
 /// flickering that happens during rapid frame updates (e.g. scrolling).
 pub struct WebViewShaderProgram<'a> {
     image_info: &'a ImageInfo,
+    frame_viewport: Rectangle,
     cursor: Interaction,
     scale_observer: Arc<AtomicU32>,
 }
@@ -23,11 +24,13 @@ pub struct WebViewShaderProgram<'a> {
 impl<'a> WebViewShaderProgram<'a> {
     pub fn new(
         image_info: &'a ImageInfo,
+        frame_viewport: Rectangle,
         cursor: Interaction,
         scale_observer: Arc<AtomicU32>,
     ) -> Self {
         Self {
             image_info,
+            frame_viewport,
             cursor,
             scale_observer,
         }
@@ -43,6 +46,8 @@ pub struct WebViewPrimitive {
     pub(crate) pixels: FramePixels,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    /// Slice of the frame that covers the widget, in frame pixels.
+    pub(crate) frame_viewport: Rectangle,
     pub(crate) scale_observer: Arc<AtomicU32>,
 }
 
@@ -59,6 +64,8 @@ pub struct WebViewPipeline {
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
     sampler: wgpu::Sampler,
+    /// UV offset and scale selecting the viewport's slice of the texture.
+    uniforms: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     render_pipeline: wgpu::RenderPipeline,
@@ -73,26 +80,59 @@ impl WebViewPipeline {
         let (texture, texture_view) =
             create_texture(device, width.max(1), height.max(1), self.texture_format);
 
-        self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("webview_bind_group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        });
+        self.bind_group = create_bind_group(
+            device,
+            &self.bind_group_layout,
+            &texture_view,
+            &self.sampler,
+            &self.uniforms,
+        );
 
         self.texture = texture;
         self.texture_view = texture_view;
         self.texture_size = (width, height);
         self.last_uploaded = None;
     }
+}
+
+fn create_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    texture_view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    uniforms: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("webview_bind_group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(texture_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniforms.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+/// UV offset and scale mapping the widget onto `viewport` within a
+/// `width` by `height` texture.
+fn uv_transform(viewport: Rectangle, width: u32, height: u32) -> [f32; 4] {
+    let w = width.max(1) as f32;
+    let h = height.max(1) as f32;
+    [
+        viewport.x / w,
+        viewport.y / h,
+        viewport.width / w,
+        viewport.height / h,
+    ]
 }
 
 // Match the texture format to the surface's color space. The engine produces
@@ -151,6 +191,10 @@ impl shader::Primitive for WebViewPrimitive {
             pipeline.recreate_texture(device, self.width, self.height);
         }
 
+        let uv = uv_transform(self.frame_viewport, self.width, self.height);
+        let uv_bytes: Vec<u8> = uv.iter().flat_map(|f| f.to_ne_bytes()).collect();
+        queue.write_buffer(&pipeline.uniforms, 0, &uv_bytes);
+
         if pipeline.last_uploaded == Some(self.pixels.generation) {
             return;
         }
@@ -207,6 +251,13 @@ impl shader::Pipeline for WebViewPipeline {
             ..Default::default()
         });
 
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("webview_uniforms"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("webview_bgl"),
             entries: &[
@@ -226,23 +277,26 @@ impl shader::Pipeline for WebViewPipeline {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("webview_bind_group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
+        let bind_group = create_bind_group(
+            device,
+            &bind_group_layout,
+            &texture_view,
+            &sampler,
+            &uniforms,
+        );
 
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("webview_shader"),
@@ -288,6 +342,7 @@ impl shader::Pipeline for WebViewPipeline {
             texture,
             texture_view,
             sampler,
+            uniforms,
             bind_group_layout,
             bind_group,
             render_pipeline,
@@ -361,6 +416,7 @@ impl<'a> shader::Program<Action> for WebViewShaderProgram<'a> {
             pixels: self.image_info.pixels(),
             width: self.image_info.image_width(),
             height: self.image_info.image_height(),
+            frame_viewport: self.frame_viewport,
             scale_observer: self.scale_observer.clone(),
         }
     }
@@ -383,6 +439,15 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
 };
 
+struct Uniforms {
+    uv_offset: vec2<f32>,
+    uv_scale: vec2<f32>,
+};
+
+@group(0) @binding(0) var t_texture: texture_2d<f32>;
+@group(0) @binding(1) var t_sampler: sampler;
+@group(0) @binding(2) var<uniform> u: Uniforms;
+
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     // Fullscreen triangle: 3 vertices covering [-1,3] in clip space
@@ -390,12 +455,10 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     let x = f32(i32(vi & 1u)) * 4.0 - 1.0;
     let y = f32(i32(vi >> 1u)) * 4.0 - 1.0;
     out.position = vec4<f32>(x, y, 0.0, 1.0);
-    out.uv = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+    let base = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+    out.uv = base * u.uv_scale + u.uv_offset;
     return out;
 }
-
-@group(0) @binding(0) var t_texture: texture_2d<f32>;
-@group(0) @binding(1) var t_sampler: sampler;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {

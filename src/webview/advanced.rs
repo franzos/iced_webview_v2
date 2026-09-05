@@ -487,6 +487,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 shader::Shader::new(AdvancedShaderProgram::new(
                     id,
                     self.engine.get_view(id),
+                    self.engine.get_frame_viewport(id),
                     self.engine.get_cursor(id),
                     self.scale_observer.clone(),
                 ))
@@ -515,6 +516,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
 struct AdvancedShaderProgram<'a> {
     view_id: ViewId,
     image_info: &'a ImageInfo,
+    frame_viewport: Rectangle,
     cursor: Interaction,
     scale_observer: Arc<AtomicU32>,
 }
@@ -524,12 +526,14 @@ impl<'a> AdvancedShaderProgram<'a> {
     fn new(
         view_id: ViewId,
         image_info: &'a ImageInfo,
+        frame_viewport: Rectangle,
         cursor: Interaction,
         scale_observer: Arc<AtomicU32>,
     ) -> Self {
         Self {
             view_id,
             image_info,
+            frame_viewport,
             cursor,
             scale_observer,
         }
@@ -608,6 +612,7 @@ impl<'a> shader::Program<Action> for AdvancedShaderProgram<'a> {
             pixels: self.image_info.pixels(),
             width: self.image_info.image_width(),
             height: self.image_info.image_height(),
+            frame_viewport: self.frame_viewport,
             scale_observer: self.scale_observer.clone(),
         }
     }

@@ -1,6 +1,6 @@
 [package]
 name = "iced_webview_v2"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
 rust-version = "1.90.0"
 description = "An easily embedded webview library for iced"
@@ -39,6 +39,7 @@ blitz = [
     "dep:reqwest",
     "dep:tokio",
 ]
+blitz-vello-cpu = ["blitz", "dep:anyrender_vello_cpu", "anyrender_vello_cpu/multithreading"]
 litehtml = ["dep:litehtml", "dep:reqwest"]
 servo = ["dep:servo", "dep:urlencoding", "dep:rustls", "dep:euclid", "dep:keyboard-types-servo", "dep:dpi", "dep:tokio"]
 cef = ["dep:cef", "dep:urlencoding"]
@@ -63,6 +64,7 @@ blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "f6509a30ae2108712ceaf347a390db0090eedb7b", optional = true }
 anyrender = { version = "0.8", optional = true }
 anyrender_vello = { version = "0.8", optional = true }
+anyrender_vello_cpu = { version = "0.10", optional = true }
 peniko = { version = "0.6", optional = true }
 cursor-icon = { version = "1", optional = true }
 keyboard-types = { version = "0.7", optional = true }

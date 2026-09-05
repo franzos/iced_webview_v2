@@ -4,6 +4,7 @@ use crate::ImageInfo;
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
 use iced::Point;
+use iced::Rectangle;
 use iced::Size;
 
 mod view_manager;
@@ -106,6 +107,16 @@ pub trait Engine {
     fn get_cursor(&self, id: ViewId) -> Interaction;
     /// Gets CPU-rendered webview
     fn get_view(&self, id: ViewId) -> &ImageInfo;
+
+    /// Region of the `get_view` frame that covers the viewport, in frame
+    /// pixels. Engines that rasterize more than the viewport override this.
+    fn get_frame_viewport(&self, id: ViewId) -> Rectangle {
+        let frame = self.get_view(id);
+        Rectangle::with_size(Size::new(
+            frame.image_width() as f32,
+            frame.image_height() as f32,
+        ))
+    }
 
     /// Current vertical scroll offset (logical pixels).
     fn get_scroll_y(&self, _id: ViewId) -> f32 {

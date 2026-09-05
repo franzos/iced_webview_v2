@@ -5,13 +5,12 @@ use std::time::{Duration, Instant};
 
 use iced::keyboard;
 use iced::mouse::{self, Interaction};
-use iced::{Point, Size};
+use iced::{Point, Rectangle, Size};
 
 use super::{Engine, PageType, ViewId, ViewManager};
 use crate::{ImageInfo, PixelFormat};
 
 use anyrender::ImageRenderer;
-use anyrender_vello::VelloImageRenderer;
 use blitz_dom::{Document, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_net::Provider;
@@ -52,8 +51,31 @@ impl ShellProvider for WebviewShell {
     }
 }
 
+/// Band height as a multiple of the viewport height.
+const BAND_VIEWPORTS: f64 = 2.0;
+
+/// Cap on the band's physical height; wgpu guarantees 8192 px textures.
+const MAX_BAND_PX: u32 = 8192;
+
+/// Rasterized slice of the document (CSS px); scrolling inside it needs no repaint.
+#[derive(Clone, Copy, Default)]
+struct Band {
+    left: f64,
+    top: f64,
+    height: f64,
+}
+
+impl Band {
+    fn covers(&self, scroll: blitz_dom::Point<f64>, viewport_height: f64) -> bool {
+        scroll.x == self.left
+            && scroll.y >= self.top
+            && scroll.y + viewport_height <= self.top + self.height + 0.5
+    }
+}
+
 struct BlitzView {
     document: Option<HtmlDocument>,
+    band: Band,
     net_provider: Arc<dyn NetProvider>,
     nav_capture: Arc<Mutex<Option<String>>>,
     cursor_icon: Arc<Mutex<CursorIcon>>,
@@ -80,8 +102,9 @@ struct BlitzView {
 /// HTML rendering engine backed by Blitz (Stylo + Taffy + Vello).
 ///
 /// Supports modern CSS (flexbox, grid, Firefox CSS engine via Stylo),
-/// but no JavaScript. Rasterizes on the GPU via `anyrender_vello` and
-/// displays through iced's shader widget.
+/// but no JavaScript. Rasterizes on the GPU via `anyrender_vello` (or on
+/// the CPU via `anyrender_vello_cpu` with the `blitz-vello-cpu` feature)
+/// and displays through iced's shader widget.
 pub struct Blitz {
     views: ViewManager<BlitzView>,
     scale_factor: f32,
@@ -170,13 +193,22 @@ fn create_document(
     doc
 }
 
-/// Persistent GPU rasterizer shared across all views.
+/// Vello on the CPU: no second wgpu device, no GPU readback. Pairs with
+/// iced's software renderer.
+#[cfg(feature = "blitz-vello-cpu")]
+type Rasterizer = anyrender_vello_cpu::VelloCpuImageRenderer;
+
+/// Vello on the GPU via a private wgpu device, read back to a pixel buffer.
+#[cfg(not(feature = "blitz-vello-cpu"))]
+type Rasterizer = anyrender_vello::VelloImageRenderer;
+
+/// Persistent rasterizer shared across all views.
 ///
-/// Building a `VelloImageRenderer` triggers full wgpu init plus Vello
-/// pipeline compilation (hundreds of ms), so we keep one alive and resize
-/// it on demand instead of constructing per-frame.
+/// Building the GPU renderer triggers full wgpu init plus Vello pipeline
+/// compilation (hundreds of ms), so we keep one alive and resize it on
+/// demand instead of constructing per-frame.
 struct GpuRasterizer {
-    renderer: Option<VelloImageRenderer>,
+    renderer: Option<Rasterizer>,
     size: (u32, u32),
     buffer: Vec<u8>,
 }
@@ -191,11 +223,8 @@ impl GpuRasterizer {
     }
 }
 
-/// Render the visible viewport to an RGBA pixel buffer.
-///
-/// Only the viewport-sized region is rasterized — `paint_scene` reads
-/// `doc.viewport_scroll()` and offsets content accordingly, so scrolling
-/// is owned by Blitz and the texture stays bounded by window size.
+/// Render a band of up to `BAND_VIEWPORTS` viewport heights around the
+/// scroll position; the widget picks its slice via `get_frame_viewport`.
 fn render_view(view: &mut BlitzView, gpu: &mut GpuRasterizer) {
     let w = view.size.width;
     let h = view.size.height;
@@ -204,21 +233,17 @@ fn render_view(view: &mut BlitzView, gpu: &mut GpuRasterizer) {
         return;
     }
 
+    let Some(doc) = view.document.as_mut() else {
+        view.last_frame = ImageInfo::blank(w, h);
+        view.band = Band::default();
+        view.needs_render = false;
+        return;
+    };
+
     // Apply pending style/layout invalidation (e.g. :hover changes from
     // recent pointer events) before painting. Without this, hover styles
     // wouldn't appear until the next periodic resource resolve tick.
-    if let Some(ref mut doc) = view.document {
-        doc.resolve(0.0);
-    }
-
-    let doc = match view.document.as_ref() {
-        Some(d) => d,
-        None => {
-            view.last_frame = ImageInfo::blank(w, h);
-            view.needs_render = false;
-            return;
-        }
-    };
+    doc.resolve(0.0);
 
     let scale = view.scale as f64;
     let render_w = (w as f64 * scale).round() as u32;
@@ -226,34 +251,59 @@ fn render_view(view: &mut BlitzView, gpu: &mut GpuRasterizer) {
 
     if render_w == 0 || render_h == 0 {
         view.last_frame = ImageInfo::blank(w, h);
+        view.band = Band::default();
         view.needs_render = false;
         return;
     }
 
+    let viewport_h = h as f64;
+    let content_h = doc.root_element().final_layout.size.height as f64;
+    let band_max = (viewport_h * BAND_VIEWPORTS)
+        .min((MAX_BAND_PX as f64 / scale).floor())
+        .max(viewport_h);
+    let band_h = content_h.clamp(viewport_h, band_max);
+    let band_px = ((band_h * scale).round() as u32).max(render_h);
+
+    let scroll = doc.viewport_scroll();
+    let band_top = (scroll.y - (band_h - viewport_h) / 2.0)
+        .clamp(0.0, (content_h - band_h).max(0.0))
+        .floor();
+
     let renderer = gpu
         .renderer
-        .get_or_insert_with(|| VelloImageRenderer::new(render_w, render_h));
+        .get_or_insert_with(|| Rasterizer::new(render_w, band_px));
 
-    if gpu.size != (render_w, render_h) {
-        renderer.resize(render_w, render_h);
-        gpu.size = (render_w, render_h);
+    if gpu.size != (render_w, band_px) {
+        renderer.resize(render_w, band_px);
+        gpu.size = (render_w, band_px);
     }
 
-    let expected = (render_w as usize) * (render_h as usize) * 4;
+    let expected = (render_w as usize) * (band_px as usize) * 4;
     gpu.buffer.resize(expected, 0);
 
+    // paint_scene positions content by the document's scroll, so aim it at the band top while painting.
+    doc.set_viewport_scroll(blitz_dom::Point {
+        x: scroll.x,
+        y: band_top,
+    });
     renderer.render(
         |scene| {
-            paint_scene(scene, doc, scale, render_w, render_h, 0, 0);
+            paint_scene(scene, doc, scale, render_w, band_px, 0, 0);
         },
         &mut gpu.buffer,
     );
+    doc.set_viewport_scroll(scroll);
 
     // Hand the buffer to ImageInfo by move; next frame re-allocates via
-    // `resize`. Avoids a viewport-sized clone here; the image::Handle is
+    // `resize`. Avoids a band-sized clone here; the image::Handle is
     // built lazily so the shader path never pays for it.
     let pixels = mem::take(&mut gpu.buffer);
-    view.last_frame = ImageInfo::new(pixels, PixelFormat::Rgba, render_w, render_h);
+    view.last_frame = ImageInfo::new(pixels, PixelFormat::Rgba, render_w, band_px);
+    view.band = Band {
+        left: scroll.x,
+        top: band_top,
+        height: band_h,
+    };
     view.needs_render = false;
 }
 
@@ -371,6 +421,7 @@ impl Engine for Blitz {
 
         let mut view = BlitzView {
             document,
+            band: Band::default(),
             net_provider: net,
             nav_capture,
             cursor_icon,
@@ -593,6 +644,8 @@ impl Engine for Blitz {
             mouse::ScrollDelta::Pixels { x, y } => BlitzWheelDelta::Pixels(x as f64, y as f64),
         };
 
+        let pending = view.redraw_requested.load(Ordering::Acquire);
+        let before = doc.viewport_scroll();
         doc.handle_ui_event(UiEvent::Wheel(BlitzWheelEvent {
             delta,
             coords: PointerCoords {
@@ -606,6 +659,16 @@ impl Engine for Blitz {
             buttons: MouseEventButtons::None,
             mods: Modifiers::empty(),
         }));
+        let after = doc.viewport_scroll();
+
+        // A viewport scroll that stays inside the band only moves the texture
+        // offset, so drop the redraw Blitz requested for it.
+        if !pending
+            && (after.x != before.x || after.y != before.y)
+            && view.band.covers(after, view.size.height as f64)
+        {
+            view.redraw_requested.store(false, Ordering::Release);
+        }
     }
 
     fn goto(&mut self, id: ViewId, page_type: PageType) {
@@ -635,6 +698,7 @@ impl Engine for Blitz {
                 );
                 view.title = document_title(&doc);
                 view.document = Some(doc);
+                view.band = Band::default();
                 view.needs_render = true;
                 view.resource_deadline = Some(Instant::now() + RESOURCE_DRAIN_WINDOW);
                 view.last_resolve = Instant::now();
@@ -687,6 +751,35 @@ impl Engine for Blitz {
     fn get_view(&self, id: ViewId) -> &ImageInfo {
         static BLANK: std::sync::LazyLock<ImageInfo> = std::sync::LazyLock::new(ImageInfo::default);
         self.views.get(id).map(|v| &v.last_frame).unwrap_or(&BLANK)
+    }
+
+    fn get_frame_viewport(&self, id: ViewId) -> Rectangle {
+        let Some(view) = self.views.get(id) else {
+            return Rectangle::with_size(Size::ZERO);
+        };
+        let frame_w = view.last_frame.image_width() as f32;
+        let frame_h = view.last_frame.image_height() as f32;
+        let scale = view.scale;
+        let vp_w = (view.size.width as f32 * scale).round().min(frame_w);
+        let vp_h = (view.size.height as f32 * scale).round().min(frame_h);
+        let (dx, dy) = view
+            .document
+            .as_ref()
+            .map(|doc| {
+                let scroll = doc.viewport_scroll();
+                (
+                    (scroll.x - view.band.left) as f32 * scale,
+                    (scroll.y - view.band.top) as f32 * scale,
+                )
+            })
+            .unwrap_or((0.0, 0.0));
+        Rectangle::new(
+            Point::new(
+                dx.round().clamp(0.0, frame_w - vp_w),
+                dy.round().clamp(0.0, frame_h - vp_h),
+            ),
+            Size::new(vp_w, vp_h),
+        )
     }
 
     fn get_scroll_y(&self, id: ViewId) -> f32 {

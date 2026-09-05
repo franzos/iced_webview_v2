@@ -540,6 +540,7 @@ impl<Engine: engines::Engine + Default, Message: Send + Clone + 'static> WebView
                 use crate::webview::shader_widget::WebViewShaderProgram;
                 iced::widget::Shader::new(WebViewShaderProgram::new(
                     self.engine.get_view(id),
+                    self.engine.get_frame_viewport(id),
                     self.engine.get_cursor(id),
                     self.scale_observer.clone(),
                 ))

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.13] - 2026-09-05
+
+### Added
+- `blitz-vello-cpu` feature: CPU rasterization via `anyrender_vello_cpu`, multithreaded
+
+### Changed
+- Blitz: rasterizes a two-viewport band; scrolling inside it skips the repaint
+- Shader path: viewport slice selected on the GPU via a UV offset
+
 ## [0.1.12] - 2026-09-05
 
 ### Security
